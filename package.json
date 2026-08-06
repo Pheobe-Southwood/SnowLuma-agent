@@ -22,7 +22,8 @@
     "dist",
     "assets",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md"
   ],
   "engines": {
     "node": ">=22"

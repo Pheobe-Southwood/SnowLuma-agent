@@ -217,4 +217,6 @@ npm pack --dry-run
 
 ## 许可证
 
-[MIT License](LICENSE)
+[项目 MIT 许可证](LICENSE)
+
+pi 依赖及其许可证说明见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
