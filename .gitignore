@@ -1,0 +1,9 @@
+node_modules/
+dist/
+data/
+.env
+.env.*
+!.env.example
+.snowluma-agent/
+coverage/
+*.log

@@ -1,0 +1,84 @@
+import { describe, expect, it } from "vitest";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { defaultConfig } from "../src/config.js";
+import { buildInbound, isWhitelisted, messageSegments, sessionKey, textFromSegments } from "../src/filter.js";
+import { parseCommand, unescapeCommandText } from "../src/commands.js";
+import { assistantText } from "../src/reply.js";
+import { listSkills, useSkill } from "../src/skills.js";
+import { loadSession, saveSession } from "../src/sessions.js";
+import { processMedia } from "../src/media.js";
+import type { InboundMessage, OneBotMessageEvent } from "../src/types.js";
+
+function event(overrides: Partial<OneBotMessageEvent> = {}): OneBotMessageEvent {
+  return {
+    time: 1,
+    self_id: 999,
+    post_type: "message",
+    message_type: "private",
+    message_id: 42,
+    user_id: 10001,
+    message: [{ type: "text", data: { text: "hello" } }],
+    raw_message: "hello",
+    ...overrides,
+  };
+}
+
+describe("filter and commands", () => {
+  it("enforces private/group whitelist and @ mode", () => {
+    const config = defaultConfig("/tmp/snowluma-test");
+    config.whitelist.private = [10001];
+    config.whitelist.groups["123"] = { mode: "at" };
+    expect(isWhitelisted(event(), config)).toBe(true);
+    const group = event({ message_type: "group", group_id: 123, message: [{ type: "text", data: { text: "hello" } }] });
+    expect(isWhitelisted(group, config)).toBe(false);
+    group.message = [{ type: "at", data: { qq: "999" } }, { type: "text", data: { text: "hello" } }];
+    expect(isWhitelisted(group, config)).toBe(true);
+    const inbound = buildInbound(group, config, "hello")!;
+    expect(sessionKey(inbound.target)).toBe("group:123");
+    expect(textFromSegments(messageSegments(group))).toContain("hello");
+  });
+
+  it("keeps slash commands out of escaped prompts", () => {
+    expect(parseCommand("/stop")?.name).toBe("stop");
+    expect(parseCommand("//stop")).toBeUndefined();
+    expect(unescapeCommandText("//stop")).toBe("/stop");
+  });
+});
+
+describe("skills and replies", () => {
+  it("indexes frontmatter and reads only a named skill", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snowluma-skills-"));
+    await mkdir(join(dir, "demo"));
+    await writeFile(join(dir, "demo", "SKILL.md"), "---\nname: demo\ndescription: test skill\n---\nbody");
+    expect((await listSkills(dir))[0]?.description).toBe("test skill");
+    expect(await useSkill(dir, "demo")).toContain("body");
+    expect(await useSkill(dir, "missing")).toContain("未找到");
+  });
+
+  it("extracts assistant text while excluding thinking/tool calls", () => {
+    expect(assistantText({ role: "assistant", content: [{ type: "thinking", thinking: "private" }, { type: "text", text: "public" }, { type: "toolCall", id: "1", name: "x", arguments: {} }], api: "x", provider: "x", model: "x", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 1 })).toBe("public");
+  });
+});
+
+describe("media and sessions", () => {
+  it("saves direct media under encoded session directories", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snowluma-media-"));
+    const config = defaultConfig(dir);
+    config.media.downloadsDir = join(dir, "downloads");
+    const inbound: InboundMessage = { event: event({ message_id: 7 }), target: { kind: "private", userId: 10001 }, sessionKey: "private:10001", segments: [{ type: "image", data: { file: "a.jpg", url: "data:image/jpeg;base64,SGk=" } }], promptText: "", };
+    const result = await processMedia(inbound, config);
+    expect(result.failed).toBe(0);
+    expect(result.text).toContain("已保存到");
+    expect(await readFile(result.saved[0]!)).toEqual(Buffer.from("Hi"));
+  });
+
+  it("expires and atomically restores session envelopes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snowluma-session-"));
+    const envelope = { schemaVersion: 1 as const, key: "private:1", updatedAt: 1000, messages: [{ role: "user" as const, content: "hello" }] };
+    await saveSession(dir, envelope, 60);
+    expect((await loadSession(dir, "private:1", 100, 1050)).messages).toHaveLength(1);
+    expect((await loadSession(dir, "private:1", 10, 1050)).messages).toHaveLength(0);
+  });
+});

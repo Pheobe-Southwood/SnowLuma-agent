@@ -1,0 +1,139 @@
+import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
+import { createModels, createProvider } from "@earendil-works/pi-ai";
+import type { Model } from "@earendil-works/pi-ai";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
+import { envApiKeyAuth } from "@earendil-works/pi-ai";
+import type { Config, ReplyTarget, SessionMessage } from "./types.js";
+import { llmApiKey } from "./config.js";
+import { assistantText, sendText } from "./reply.js";
+import { safetyGate, buildTools } from "./tools.js";
+import { connectMcp, type McpRuntime } from "./mcp.js";
+import { listSkills, skillsPrompt } from "./skills.js";
+import type { SnowLumaWebSocketClient } from "@snowluma/sdk";
+
+function customModel(config: Config): Model<"openai-completions"> {
+  if (!config.llm.baseUrl) throw new Error("custom provider 必须配置 llm.baseUrl");
+  return {
+    id: config.llm.model,
+    name: config.llm.model,
+    api: "openai-completions",
+    provider: "custom",
+    baseUrl: config.llm.baseUrl,
+    reasoning: false,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 8192,
+  };
+}
+
+function makeModels(config: Config) {
+  const models = createModels();
+  if (config.llm.provider === "custom") {
+    models.setProvider(createProvider({
+      id: "custom",
+      name: "Custom OpenAI-compatible",
+      baseUrl: config.llm.baseUrl ?? undefined,
+      auth: { apiKey: envApiKeyAuth("Custom API key", [config.llm.apiKeyEnv]) },
+      models: [customModel(config)],
+      api: openAICompletionsApi(),
+    }));
+  } else {
+    const provider = config.llm.provider === "anthropic"
+      ? anthropicProvider()
+      : config.llm.provider === "openai"
+        ? openaiProvider()
+        : config.llm.provider === "deepseek"
+          ? deepseekProvider()
+          : openrouterProvider();
+    models.setProvider(provider);
+  }
+  return models;
+}
+
+export interface AgentController {
+  readonly agent: Agent;
+  readonly mcp: McpRuntime;
+  prompt(text: string): Promise<void>;
+  abort(): void;
+  reset(): void;
+  setSystemPrompt(prompt: string): void;
+  messages(): AgentMessage[];
+  close(): Promise<void>;
+}
+
+export async function probeLlm(config: Config): Promise<{ model: string; text: string }> {
+  const key = llmApiKey(config);
+  if (!key) throw new Error(`缺少 ${config.llm.apiKeyEnv}`);
+  const models = makeModels(config);
+  const model = config.llm.provider === "custom" ? customModel(config) : models.getModel(config.llm.provider, config.llm.model);
+  if (!model) throw new Error(`pi-ai 中找不到模型 ${config.llm.provider}/${config.llm.model}`);
+  const result = await models.completeSimple(model, {
+    systemPrompt: "只回复 OK，不要添加其他内容。",
+    messages: [{ role: "user", content: "连接测试，请回复 OK。", timestamp: Date.now() }],
+  }, { apiKey: key, maxTokens: 16 });
+  const text = result.content.filter((block): block is { type: "text"; text: string } => block.type === "text").map((block) => block.text).join("").trim();
+  if (result.stopReason === "error" || result.stopReason === "aborted") throw new Error(result.errorMessage ?? `模型返回 ${result.stopReason}`);
+  return { model: `${config.llm.provider}/${config.llm.model}`, text };
+}
+
+export async function createAgentController(options: {
+  config: Config;
+  systemPrompt: string;
+  messages: SessionMessage[];
+  target: ReplyTarget;
+  qq: SnowLumaWebSocketClient;
+  sessionKey: string;
+}): Promise<AgentController> {
+  const { config } = options;
+  const key = llmApiKey(config);
+  if (!key) throw new Error(`缺少 ${config.llm.apiKeyEnv}，请先配置 LLM`);
+  const models = makeModels(config);
+  const model = config.llm.provider === "custom" ? customModel(config) : models.getModel(config.llm.provider, config.llm.model);
+  if (!model) throw new Error(`pi-ai 中找不到模型 ${config.llm.provider}/${config.llm.model}；请检查配置或锁定版本的模型目录`);
+  const mcp = await connectMcp(config);
+  const skills = await listSkills(config.skillsDir);
+  const systemPrompt = `${options.systemPrompt}\n\n${skillsPrompt(skills)}`;
+  let aborted = false;
+  const batchTexts: string[] = [];
+  const agent = new Agent({
+    initialState: {
+      systemPrompt,
+      model,
+      thinkingLevel: config.llm.thinkingLevel,
+      tools: buildTools(config, config.skillsDir, mcp.tools),
+      messages: options.messages as unknown as AgentMessage[],
+    },
+    streamFn: models.streamSimple.bind(models),
+    getApiKey: async () => key,
+    toolExecution: "sequential",
+    sessionId: options.sessionKey,
+    beforeToolCall: async ({ toolCall }) => safetyGate(config, toolCall.name),
+  });
+  agent.subscribe(async (event) => {
+    if (event.type !== "message_end") return;
+    const text = assistantText(event.message);
+    if (!text || aborted) return;
+    if (config.reply.mode === "batch") batchTexts.push(text);
+    else await sendText(options.qq, options.target, text, config);
+  });
+  return {
+    agent,
+    mcp,
+    prompt: async (text) => {
+      aborted = false;
+      batchTexts.length = 0;
+      await agent.prompt(text);
+      if (!aborted && config.reply.mode === "batch") for (const item of batchTexts.splice(0)) await sendText(options.qq, options.target, item, config);
+    },
+    abort: () => { aborted = true; agent.abort(); },
+    reset: () => { aborted = false; batchTexts.length = 0; agent.reset(); },
+    setSystemPrompt: (prompt) => { agent.state.systemPrompt = `${prompt}\n\n${skillsPrompt(skills)}`; },
+    messages: () => agent.state.messages as AgentMessage[],
+    close: () => mcp.close(),
+  };
+}

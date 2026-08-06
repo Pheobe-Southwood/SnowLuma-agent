@@ -1,0 +1,14 @@
+[Unit]
+Description=SnowLuma Agent
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.snowluma-agent
+ExecStart=%h/.npm-global/bin/snowluma-agent start
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target
