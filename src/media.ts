@@ -1,6 +1,7 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { extname } from "node:path";
 import type { SnowLumaWebSocketClient } from "@snowluma/sdk";
+import { messageSegmentsForPrompt } from "./filter.js";
 import type { AnyMessageSegment, Config, InboundMessage } from "./types.js";
 
 export interface MediaResult { text: string; failed: number; saved: string[]; }
@@ -84,7 +85,7 @@ export async function processMedia(inbound: InboundMessage, config: Config, sdkC
   const saved: string[] = [];
   let sequence = 0;
   const textParts: string[] = [];
-  for (const segment of inbound.segments) {
+  for (const segment of messageSegmentsForPrompt(inbound.event, inbound.segments)) {
     const type = String(segment.type);
     if (!config.media.autoDownload.includes(type as never) || !["image", "file", "record", "video"].includes(type)) {
       if (type === "text") textParts.push(String((segment.data as Record<string, unknown>).text ?? ""));

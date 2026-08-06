@@ -41,6 +41,26 @@ export function sessionKey(target: SessionTarget): string {
   return target.userId === undefined ? `group:${target.groupId}` : `group:${target.groupId}:user:${target.userId}`;
 }
 
+export function messageSegmentsForPrompt(event: OneBotMessageEvent, segments = messageSegments(event)): AnyMessageSegment[] {
+  if (event.message_type !== "group") return segments;
+  const result = segments.map((segment) => ({ ...segment, data: { ...segment.data } }));
+  let index = 0;
+  let removed = false;
+  while (index < result.length) {
+    const segment = result[index];
+    if (segment.type === "text") {
+      const text = String(segment.data.text ?? "");
+      if (!text.trim()) { index += 1; continue; }
+      if (removed) segment.data.text = text.replace(/^\s+/, "");
+      break;
+    }
+    if (segment.type !== "at" || String(segment.data.qq) !== String(event.self_id)) break;
+    result.splice(index, 1);
+    removed = true;
+  }
+  return result;
+}
+
 export function textFromSegments(segments: AnyMessageSegment[]): string {
   return segments
     .map((segment) => {
@@ -52,6 +72,14 @@ export function textFromSegments(segments: AnyMessageSegment[]): string {
     })
     .join("")
     .trim();
+}
+
+export function promptTextFromEvent(event: OneBotMessageEvent, segments = messageSegments(event)): string {
+  return textFromSegments(messageSegmentsForPrompt(event, segments));
+}
+
+export function promptForLlm(event: OneBotMessageEvent, text: string): string {
+  return event.message_type === "group" ? `[发送者QQ号: ${event.user_id}] ${text}` : text;
 }
 
 export function buildInbound(event: OneBotMessageEvent, config: Config, promptText: string): InboundMessage | undefined {

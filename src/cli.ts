@@ -2,7 +2,7 @@ import { access } from "node:fs/promises";
 import { appDir, initWorkspace, loadConfig, llmConfigurationStatus } from "./config.js";
 import { checkQq, createQqClient } from "./qq.js";
 import { listSkills } from "./skills.js";
-import { buildInbound, isWhitelisted, textFromSegments, messageSegments } from "./filter.js";
+import { buildInbound, isWhitelisted, promptForLlm, promptTextFromEvent, messageSegments } from "./filter.js";
 import { commandAllowed, parseCommand, unescapeCommandText } from "./commands.js";
 import { processMedia } from "./media.js";
 import { noticeText, sendText } from "./reply.js";
@@ -11,7 +11,7 @@ import { createAgentController, probeLlm } from "./agent.js";
 import type { InboundMessage, OneBotMessageEvent, ReplyTarget } from "./types.js";
 
 function usage(): void {
-  console.log(`snowluma-agent 0.1.0\n\n用法：\n  snowluma-agent init [--systemd]\n  snowluma-agent start\n  snowluma-agent doctor\n  snowluma-agent skills list\n  snowluma-agent --version`);
+  console.log(`snowluma-agent 0.1.1\n\n用法：\n  snowluma-agent init [--systemd]\n  snowluma-agent start\n  snowluma-agent doctor\n  snowluma-agent skills list\n  snowluma-agent --version`);
 }
 
 function argDir(args: string[]): string { const index = args.indexOf("--dir"); return appDir(index >= 0 ? args[index + 1] : undefined); }
@@ -78,7 +78,7 @@ async function commandStart(args: string[]): Promise<void> {
   const handle = async (event: OneBotMessageEvent): Promise<void> => {
     if (!isWhitelisted(event, config)) return;
     const segments = messageSegments(event);
-    const plain = textFromSegments(segments);
+    const plain = promptTextFromEvent(event, segments);
     const inbound = buildInbound(event, config, plain);
     if (!inbound) return;
     const command = parseCommand(plain, config.commandPrefix);
@@ -98,7 +98,7 @@ async function commandStart(args: string[]): Promise<void> {
     }
     inbound.promptText = unescapeCommandText(plain, config.commandPrefix);
     const media = await processMedia(inbound, config, qq);
-    inbound.promptText = media.text;
+    inbound.promptText = promptForLlm(event, media.text);
     if (media.failed) await sendText(qq, targetOf(inbound), config.media.downloadFailedNotice, config);
     const result = await manager.submit(inbound);
     if (result.position === -1) await sendText(qq, targetOf(inbound), config.reply.queueFullNotice, config);
@@ -114,7 +114,7 @@ async function commandStart(args: string[]): Promise<void> {
 
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const [command, subcommand] = argv;
-  if (command === "--version" || command === "-v") { console.log("0.1.0"); return; }
+  if (command === "--version" || command === "-v") { console.log("0.1.1"); return; }
   if (command === "init") return commandInit(argv);
   if (command === "doctor") return commandDoctor(argv);
   if (command === "skills" && subcommand === "list") return commandSkills(argv);

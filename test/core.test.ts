@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../src/config.js";
-import { buildInbound, isWhitelisted, messageSegments, sessionKey, textFromSegments } from "../src/filter.js";
+import { buildInbound, isWhitelisted, messageSegments, promptForLlm, promptTextFromEvent, sessionKey, textFromSegments } from "../src/filter.js";
 import { parseCommand, unescapeCommandText } from "../src/commands.js";
 import { assistantText } from "../src/reply.js";
 import { listSkills, useSkill } from "../src/skills.js";
@@ -45,6 +45,33 @@ describe("filter and commands", () => {
     expect(parseCommand("//stop")).toBeUndefined();
     expect(unescapeCommandText("//stop")).toBe("/stop");
   });
+
+  it("removes only a leading self mention from group prompt text", () => {
+    const group = event({
+      message_type: "group",
+      group_id: 123,
+      user_id: 456,
+      message: [{ type: "at", data: { qq: "999" } }, { type: "text", data: { text: " /new" } }],
+    });
+    expect(promptTextFromEvent(group)).toBe("/new");
+    expect(parseCommand(promptTextFromEvent(group))?.name).toBe("new");
+    expect(promptForLlm(group, "你好")).toBe("[发送者QQ号: 456] 你好");
+
+    const otherMention = event({
+      message_type: "group",
+      group_id: 123,
+      message: [{ type: "at", data: { qq: "100" } }, { type: "text", data: { text: " hello" } }],
+    });
+    expect(promptTextFromEvent(otherMention)).toBe("@100 hello");
+
+    const middleMention = event({
+      message_type: "group",
+      group_id: 123,
+      message: [{ type: "text", data: { text: "hello " } }, { type: "at", data: { qq: "999" } }, { type: "text", data: { text: " world" } }],
+    });
+    expect(promptTextFromEvent(middleMention)).toBe("hello @999 world");
+    expect(promptForLlm(event(), "你好")).toBe("你好");
+  });
 });
 
 describe("skills and replies", () => {
@@ -72,6 +99,28 @@ describe("media and sessions", () => {
     expect(result.failed).toBe(0);
     expect(result.text).toContain("已保存到");
     expect(await readFile(result.saved[0]!)).toEqual(Buffer.from("Hi"));
+  });
+
+  it("removes a leading self mention from group media prompt text", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snowluma-group-media-"));
+    const config = defaultConfig(dir);
+    config.media.downloadsDir = join(dir, "downloads");
+    const groupEvent = event({
+      message_type: "group",
+      group_id: 123,
+      user_id: 456,
+      message: [{ type: "at", data: { qq: "999" } }, { type: "text", data: { text: " see this" } }],
+    });
+    const inbound: InboundMessage = {
+      event: groupEvent,
+      target: { kind: "group", groupId: 123 },
+      sessionKey: "group:123",
+      segments: [{ type: "at", data: { qq: "999" } }, { type: "text", data: { text: " see this" } }, { type: "image", data: { file: "a.jpg", url: "data:image/jpeg;base64,SGk=" } }],
+      promptText: "",
+    };
+    const result = await processMedia(inbound, config);
+    expect(result.text).toMatch(/^see this/);
+    expect(result.text).not.toContain("@999");
   });
 
   it("expires and atomically restores session envelopes", async () => {
