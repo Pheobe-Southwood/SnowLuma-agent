@@ -21,7 +21,27 @@
 
 ## 安装
 
-从 GitHub 安装最新版本：
+### 从 npm 安装（推荐）
+
+当前已发布版本为 `0.1.1`：
+
+```bash
+npm install -g snowluma-agent
+snowluma-agent --version
+```
+
+如果使用 root 用户并希望与本机其他全局 npm 软件保持一致：
+
+```bash
+mkdir -p /root/.npm-global
+npm install -g snowluma-agent --prefix /root/.npm-global
+export PATH="/root/.npm-global/bin:$PATH"
+snowluma-agent --version
+```
+
+### 从 GitHub 安装开发版本
+
+需要直接安装 GitHub `main` 分支时：
 
 ```bash
 npm install -g github:Pheobe-Southwood/SnowLuma-agent --prefix /root/.npm-global
@@ -29,21 +49,7 @@ export PATH="/root/.npm-global/bin:$PATH"
 snowluma-agent --version
 ```
 
-如果之后发布到 npm，也可以直接安装：
-
-```bash
-npm install -g snowluma-agent
-```
-
 更新时重复执行安装命令即可。卸载 CLI 不会自动删除运行数据。
-
-如果使用 root 用户并希望与本机其他全局 npm 软件保持一致，建议固定安装到 `/root/.npm-global`：
-
-```bash
-mkdir -p /root/.npm-global
-npm install -g github:Pheobe-Southwood/SnowLuma-agent --prefix /root/.npm-global
-export PATH="/root/.npm-global/bin:$PATH"
-```
 
 安装目录、运行目录和配置文件可以分开管理：
 
