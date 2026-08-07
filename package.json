@@ -1,6 +1,6 @@
 {
   "name": "snowluma-agent",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "基于 pi 的安全 SnowLuma QQ AI Agent。",
   "repository": {
     "type": "git",
