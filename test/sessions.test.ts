@@ -119,7 +119,7 @@ describe("SessionManager /stop", () => {
   });
 
   it("aborts the current prompt, clears queued messages, and accepts a later message", async () => {
-    const { config, qq } = await testContext();
+    const { config, qq, replies } = await testContext();
     const promptStarted = deferred();
     const promptRelease = deferred();
     const calls: string[] = [];
