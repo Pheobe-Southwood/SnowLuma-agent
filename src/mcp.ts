@@ -8,6 +8,15 @@ import type { Config, McpServerConfig } from "./types.js";
 interface McpConnection { client: Client; transport: { close?: () => Promise<void> }; }
 export interface McpRuntime { tools: AgentTool[]; close: () => Promise<void>; }
 
+interface McpToolResult {
+  content?: Array<{ type: string; text?: string; [key: string]: unknown }>;
+  [key: string]: unknown;
+}
+
+export async function callMcpTool(client: Pick<Client, "callTool">, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<McpToolResult> {
+  return await client.callTool({ name, arguments: args }, undefined, { signal }) as McpToolResult;
+}
+
 function safeName(value: string): string { return value.replace(/[^a-zA-Z0-9_-]/g, "_"); }
 
 async function connectServer(server: McpServerConfig): Promise<McpConnection> {
@@ -42,8 +51,8 @@ export async function connectMcp(config: Config): Promise<McpRuntime> {
         label: item.name,
         description: item.description ?? `MCP 工具 ${item.name}`,
         parameters: Type.Unsafe(item.inputSchema as Record<string, unknown>),
-        execute: async (_id, args) => {
-          const result = await connection.client.callTool({ name: item.name, arguments: args as Record<string, unknown> }) as { content?: Array<{ type: string; text?: string; [key: string]: unknown }>; [key: string]: unknown };
+        execute: async (_id, args, signal) => {
+          const result = await callMcpTool(connection.client, item.name, args as Record<string, unknown>, signal);
           const content = (result.content ?? []).flatMap((block) => {
             if (block.type === "text") return [{ type: "text" as const, text: block.text ?? "" }];
             return [{ type: "text" as const, text: JSON.stringify(block) }];
