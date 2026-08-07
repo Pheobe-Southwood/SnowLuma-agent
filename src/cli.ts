@@ -11,7 +11,7 @@ import { createAgentController, probeLlm } from "./agent.js";
 import type { InboundMessage, OneBotMessageEvent, ReplyTarget } from "./types.js";
 
 function usage(): void {
-  console.log(`snowluma-agent 0.1.1\n\n用法：\n  snowluma-agent init [--systemd]\n  snowluma-agent start\n  snowluma-agent doctor\n  snowluma-agent skills list\n  snowluma-agent --version`);
+  console.log(`snowluma-agent 0.1.2\n\n用法：\n  snowluma-agent init [--systemd]\n  snowluma-agent start\n  snowluma-agent doctor\n  snowluma-agent skills list\n  snowluma-agent --version`);
 }
 
 function argDir(args: string[]): string { const index = args.indexOf("--dir"); return appDir(index >= 0 ? args[index + 1] : undefined); }
@@ -114,7 +114,7 @@ async function commandStart(args: string[]): Promise<void> {
 
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const [command, subcommand] = argv;
-  if (command === "--version" || command === "-v") { console.log("0.1.1"); return; }
+  if (command === "--version" || command === "-v") { console.log("0.1.2"); return; }
   if (command === "init") return commandInit(argv);
   if (command === "doctor") return commandDoctor(argv);
   if (command === "skills" && subcommand === "list") return commandSkills(argv);

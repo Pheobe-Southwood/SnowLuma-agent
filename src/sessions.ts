@@ -60,6 +60,11 @@ export interface SessionManagerOptions {
   createController: (target: ReplyTarget, sessionKey: string, messages: SessionMessage[], systemPrompt: string) => Promise<AgentController>;
 }
 
+function removeAbortedAssistantMessages(controller: AgentController): void {
+  const messages = controller.messages();
+  while (messages.at(-1)?.role === "assistant" && (messages.at(-1) as unknown as Record<string, unknown>).stopReason === "aborted") messages.pop();
+}
+
 interface Worker {
   key: string;
   target: ReplyTarget;
@@ -72,6 +77,7 @@ interface Worker {
   controller?: AgentController;
   processing: boolean;
   current: boolean;
+  stopRequested: boolean;
 }
 
 export class SessionManager {
@@ -82,10 +88,9 @@ export class SessionManager {
     return inbound.target.kind === "private" ? { kind: "private", userId: inbound.target.userId } : { kind: "group", groupId: inbound.target.groupId };
   }
 
-  private async createWorker(inbound: InboundMessage): Promise<Worker> {
+  private createWorker(inbound: InboundMessage): Worker {
     const { config } = this.options;
     const target = this.targetFor(inbound);
-    const envelope = await loadSession(config.session.storageDir, inbound.sessionKey, config.session.inactivityTtlHours * 3600_000);
     const worker: Worker = {
       key: inbound.sessionKey,
       target,
@@ -97,17 +102,25 @@ export class SessionManager {
       ready: Promise.resolve(undefined as never),
       processing: false,
       current: false,
+      stopRequested: false,
     };
-    worker.ready = readSystemPrompt(config.promptsDir, inbound.target).then((prompt) => this.options.createController(target, inbound.sessionKey, envelope.messages, prompt));
-    worker.ready.then((controller) => { worker.controller = controller; }).catch(() => undefined);
     this.workers.set(inbound.sessionKey, worker);
+    worker.ready = (async () => {
+      const envelope = await loadSession(config.session.storageDir, inbound.sessionKey, config.session.inactivityTtlHours * 3600_000);
+      const prompt = await readSystemPrompt(config.promptsDir, inbound.target);
+      return this.options.createController(target, inbound.sessionKey, envelope.messages, prompt);
+    })();
+    worker.ready.then((controller) => {
+      worker.controller = controller;
+      if (worker.stopRequested) controller.abort();
+    }).catch(() => undefined);
     return worker;
   }
 
   async submit(inbound: InboundMessage): Promise<{ queued: boolean; position: number }> {
     const { config } = this.options;
     let worker = this.workers.get(inbound.sessionKey);
-    if (!worker) worker = await this.createWorker(inbound);
+    if (!worker) worker = this.createWorker(inbound);
     if (worker.queue.length >= config.queue.maxLength) return { queued: false, position: -1 };
     const position = worker.queue.length + (worker.current ? 2 : 1);
     worker.queue.push(inbound);
@@ -122,18 +135,24 @@ export class SessionManager {
     const { config } = this.options;
     try {
       const controller = await worker.ready;
-      while (worker.queue.length) {
+      if (worker.stopRequested) return;
+      while (worker.queue.length && !worker.stopRequested) {
         const inbound = worker.queue.shift()!;
         worker.current = true;
         try {
           controller.setSystemPrompt(await readSystemPrompt(config.promptsDir, worker.sessionTarget));
           await controller.prompt(inbound.promptText);
-          const envelope: SessionEnvelope = { schemaVersion, key: worker.key, updatedAt: worker.updatedAt, messages: controller.messages() as unknown as SessionMessage[] };
-          await saveSession(config.session.storageDir, envelope, config.session.maxMessages);
+          if (!worker.stopRequested) {
+            const envelope: SessionEnvelope = { schemaVersion, key: worker.key, updatedAt: worker.updatedAt, messages: controller.messages() as unknown as SessionMessage[] };
+            await saveSession(config.session.storageDir, envelope, config.session.maxMessages);
+          }
         } catch (error) {
-          await sendText(this.options.qq, worker.target, "处理消息时发生错误，请稍后重试。", config);
-          console.error(`[session ${worker.key}]`, error);
+          if (!worker.stopRequested) {
+            await sendText(this.options.qq, worker.target, "处理消息时发生错误，请稍后重试。", config);
+            console.error(`[session ${worker.key}]`, error);
+          }
         } finally {
+          if (worker.stopRequested) removeAbortedAssistantMessages(controller);
           worker.current = false;
         }
         if (worker.pendingReset) {
@@ -144,22 +163,25 @@ export class SessionManager {
       }
     } catch (error) {
       worker.queue.length = 0;
-      await sendText(this.options.qq, worker.target, "会话初始化失败，请检查配置。", config);
-      console.error(`[session ${worker.key}]`, error);
+      if (!worker.stopRequested) {
+        await sendText(this.options.qq, worker.target, "会话初始化失败，请检查配置。", config);
+        console.error(`[session ${worker.key}]`, error);
+      }
     } finally {
       worker.busy = false;
       worker.processing = false;
+      worker.stopRequested = false;
       if (worker.queue.length) { worker.busy = true; void this.process(worker); }
     }
   }
 
   async stop(key: string): Promise<boolean> {
     const worker = this.workers.get(key);
-    if (!worker?.busy || !worker.controller) return false;
+    if (!worker?.busy) return false;
     worker.queue.length = 0;
-    worker.controller.abort();
-    const messages = worker.controller.messages();
-    while (messages.at(-1)?.role === "assistant" && (messages.at(-1) as unknown as Record<string, unknown>).stopReason === "aborted") messages.pop();
+    worker.stopRequested = true;
+    worker.controller?.abort();
+    if (worker.controller) removeAbortedAssistantMessages(worker.controller);
     return true;
   }
 
