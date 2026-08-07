@@ -65,7 +65,11 @@ export interface SessionManagerOptions {
 
 function removeAbortedAssistantMessages(controller: AgentController): void {
   const messages = controller.messages();
-  while (messages.at(-1)?.role === "assistant" && (messages.at(-1) as unknown as Record<string, unknown>).stopReason === "aborted") messages.pop();
+  for (;;) {
+    const last = messages.at(-1);
+    if (last?.role !== "assistant" || last.stopReason !== "aborted") break;
+    messages.pop();
+  }
 }
 
 interface Worker {
@@ -100,7 +104,6 @@ export class SessionManager {
   private async reconcileExternalRun(worker: Worker, controller: AgentController): Promise<void> {
     try {
       await controller.waitForIdle();
-      await worker.activePrompt;
     } catch (error) {
       console.error(`[session ${worker.key}] 等待 Agent idle 失败`, error);
     }
@@ -160,7 +163,7 @@ export class SessionManager {
     worker.queue.push(inbound);
     worker.updatedAt = Date.now();
     if (!worker.processing) {
-      if (worker.controller && (this.controllerRunning(worker) || worker.activePrompt)) this.trackExternalRun(worker, worker.controller);
+      if (worker.controller && this.controllerRunning(worker)) this.trackExternalRun(worker, worker.controller);
       else void this.process(worker);
     }
     return { queued: position > 1, position };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -90,6 +90,37 @@ describe("ConversationStore", () => {
     expect(updated.env.DEEPSEEK_API_KEY).toBe("");
     const envText = await readFile(join(updated.dir, ".env"), "utf8");
     expect(envText).toContain("DEEPSEEK_API_KEY=");
+  });
+
+  it("keeps a non-empty conversation key when the global value changes", async () => {
+    const { config, dir } = await testContext();
+    await writeFile(join(dir, ".env"), "ANTHROPIC_API_KEY=global-v1\n");
+    const first = await new ConversationStore({ config, dir }).get(privateTarget());
+    expect(first.env.ANTHROPIC_API_KEY).toBe("global-v1");
+    await writeFile(join(dir, ".env"), "ANTHROPIC_API_KEY=global-v2\n");
+    const second = await new ConversationStore({ config, dir }).get(privateTarget());
+    expect(second.env.ANTHROPIC_API_KEY).toBe("global-v1");
+  });
+
+  it("fills an empty conversation key from the global env", async () => {
+    const { config, dir } = await testContext();
+    const first = await new ConversationStore({ config, dir }).get(privateTarget());
+    expect(first.env.ANTHROPIC_API_KEY).toBe("");
+    await writeFile(join(dir, ".env"), "ANTHROPIC_API_KEY=filled-later\n");
+    const second = await new ConversationStore({ config, dir }).get(privateTarget());
+    expect(second.env.ANTHROPIC_API_KEY).toBe("filled-later");
+  });
+
+  it("recovers from a corrupt conversation config.json", async () => {
+    const { config, dir } = await testContext();
+    const store = new ConversationStore({ config, dir });
+    const conv = await store.get(privateTarget());
+    await writeFile(join(conv.dir, "config.json"), "{not-json\n");
+    const recovered = await new ConversationStore({ config, dir }).get(privateTarget());
+    expect(recovered.config.llm.model).toBe(config.llm.model);
+    expect(existsSync(join(conv.dir, "config.json"))).toBe(true);
+    expect(JSON.parse(await readFile(join(conv.dir, "config.json"), "utf8")).llm).toEqual(config.llm);
+    expect((await readdir(conv.dir)).some((name) => name.startsWith("config.json.corrupt."))).toBe(true);
   });
 
   it("merges user edits to the conversation config over the global config", async () => {

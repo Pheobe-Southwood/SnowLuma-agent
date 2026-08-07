@@ -53,33 +53,52 @@ function conversationDefaults(config: Config, target: SessionTarget): Record<str
   return out;
 }
 
+async function writeSecure(path: string, content: string): Promise<void> {
+  const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(temp, content, { mode: 0o600 });
+  await chmod(temp, 0o600);
+  await rename(temp, path);
+  await chmod(path, 0o600).catch(() => undefined);
+}
+
 async function globalEnvMap(appDir: string): Promise<Record<string, string>> {
   try { return dotenv.parse(await readFile(envPath(appDir), "utf8")); } catch { return {}; }
 }
 
-async function ensureConversationConfig(convDir: string, config: Config, target: SessionTarget): Promise<void> {
+async function readConversationConfig(convDir: string, config: Config, target: SessionTarget): Promise<Record<string, unknown>> {
   const path = conversationConfigPath(convDir);
-  if (existsSync(path)) return;
-  const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(temp, `${JSON.stringify(conversationDefaults(config, target), null, 2)}\n`, { mode: 0o600 });
-  await chmod(temp, 0o600);
-  await rename(temp, path);
-  await chmod(path, 0o600);
+  const defaults = () => conversationDefaults(config, target);
+  if (!existsSync(path)) {
+    const raw = defaults();
+    await writeSecure(path, `${JSON.stringify(raw, null, 2)}\n`);
+    return raw;
+  }
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  } catch {
+    await rename(path, `${path}.corrupt.${Date.now()}`).catch(() => undefined);
+    const raw = defaults();
+    await writeSecure(path, `${JSON.stringify(raw, null, 2)}\n`);
+    return raw;
+  }
+}
+
+function serializeEnv(env: Record<string, string>): string {
+  return `${Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n")}\n`;
 }
 
 async function ensureConversationEnv(convDir: string, config: Config, appDir: string): Promise<void> {
   const path = conversationEnvPath(convDir);
   const key = config.llm.apiKeyEnv;
   const global = await globalEnvMap(appDir);
-  const line = `${key}=${global[key] ?? ""}\n`;
-  if (existsSync(path)) {
-    const parsed = dotenv.parse(await readFile(path, "utf8"));
-    if (parsed[key] !== undefined) return;
-    await writeFile(path, `${(await readFile(path, "utf8")).trimEnd()}\n${line}`, { mode: 0o600 });
-  } else {
-    await writeFile(path, line, { mode: 0o600 });
-  }
-  await chmod(path, 0o600).catch(() => undefined);
+  let parsed: Record<string, string> = {};
+  try { parsed = dotenv.parse(await readFile(path, "utf8")); } catch { /* missing ok */ }
+  const current = parsed[key];
+  if (current !== undefined && current !== "") return;
+  const next = global[key] ?? "";
+  if (current === next) return;
+  parsed[key] = next;
+  await writeSecure(path, serializeEnv(parsed));
 }
 
 export class ConversationStore {
@@ -100,8 +119,7 @@ export class ConversationStore {
     const convDir = conversationDir(config, target);
     await mkdir(convDir, { recursive: true, mode: 0o700 });
     await chmod(convDir, 0o700).catch(() => undefined);
-    await ensureConversationConfig(convDir, config, target);
-    const raw = existsSync(conversationConfigPath(convDir)) ? JSON.parse(await readFile(conversationConfigPath(convDir), "utf8")) as Record<string, unknown> : {};
+    const raw = await readConversationConfig(convDir, config, target);
     const merged = mergeConfig(config, raw);
     const errors = validateConfig(merged);
     if (errors.length) throw new Error(`会话 ${id} 配置无效：\n- ${errors.join("\n- ")}`);
