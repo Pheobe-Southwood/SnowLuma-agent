@@ -22,7 +22,8 @@ export function defaultConfig(dir: string): Config {
       apiKeyEnv: "ANTHROPIC_API_KEY",
     },
     whitelist: { private: [], groups: {}, defaultGroupMode: "at", defaultGroupSession: "shared" },
-    session: { inactivityTtlHours: 12, maxMessages: 60, storageDir: join(dir, "data/sessions") },
+    session: { inactivityTtlHours: 12, maxMessages: 60 },
+    conversationsDir: join(dir, "conversations"),
     media: {
       downloadsDir: join(dir, "data/downloads"),
       autoDownload: ["image", "file", "record"],
@@ -51,7 +52,7 @@ export function defaultConfig(dir: string): Config {
     },
     commandPrefix: "/",
     queue: { maxLength: 10, notifyFirstOnly: false },
-    skillsDir: join(dir, "skills"),
+    skills: { dir: join(dir, "skills"), enabled: [] },
     mcp: { servers: [] },
     blockedToolNames: ["bash", "terminal", "shell", "edit", "write", "read", "execute", "exec", "filesystem", "run"],
   };
@@ -61,15 +62,15 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function mergeConfig(base: Config, input: Record<string, unknown>): Config {
+export function mergeConfig(base: Config, input: Record<string, unknown>): Config {
   const result = structuredClone(base) as Config;
-  for (const [key, value] of Object.entries(input)) {
-    if (isObject(value) && isObject((result as unknown as Record<string, unknown>)[key])) {
-      Object.assign((result as unknown as Record<string, unknown>)[key] as object, value);
-    } else if (key in result) {
-      (result as unknown as Record<string, unknown>)[key] = value;
+  const apply = (target: Record<string, unknown>, source: Record<string, unknown>): void => {
+    for (const [key, value] of Object.entries(source)) {
+      if (isObject(value) && isObject(target[key])) apply(target[key] as Record<string, unknown>, value);
+      else if (key in target) target[key] = value;
     }
-  }
+  };
+  apply(result as unknown as Record<string, unknown>, input);
   return result;
 }
 
@@ -99,7 +100,11 @@ export async function loadConfig(dir = appDir()): Promise<Config> {
   return config;
 }
 
-export function llmApiKey(config: Config): string | undefined {
+export function llmApiKey(config: Config, env?: Record<string, string>): string | undefined {
+  if (env) {
+    const value = env[config.llm.apiKeyEnv];
+    if (value) return value;
+  }
   return process.env[config.llm.apiKeyEnv];
 }
 
@@ -125,7 +130,7 @@ async function atomicWrite(path: string, content: string, mode: number): Promise
 export async function initWorkspace(dir = appDir(), systemd = false): Promise<void> {
   const config = defaultConfig(dir);
   await secureMkdir(dir);
-  for (const path of [config.session.storageDir, config.media.downloadsDir, config.reply.failedSendDir, config.promptsDir, config.skillsDir]) await secureMkdir(path);
+  for (const path of [config.conversationsDir, config.media.downloadsDir, config.reply.failedSendDir, config.promptsDir, config.skills.dir]) await secureMkdir(path);
   if (!existsSync(configPath(dir))) await atomicWrite(configPath(dir), `${JSON.stringify(config, null, 2)}\n`, 0o600);
   const defaultPrompt = join(config.promptsDir, "SYSTEM_DEFAULT.md");
   const assetPrompt = new URL("../assets/SYSTEM_DEFAULT.md", import.meta.url);

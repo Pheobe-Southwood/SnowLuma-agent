@@ -7,6 +7,7 @@ if (fileURLToPath(import.meta.url) === entryPath) await main();
 
 export * from "./types.js";
 export * from "./config.js";
+export * from "./conversations.js";
 export * from "./filter.js";
 export * from "./commands.js";
 export * from "./media.js";

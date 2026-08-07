@@ -8,6 +8,7 @@
 - 支持私聊和群聊白名单；群聊默认只处理 @ 机器人的消息。
 - 支持 `/new` 开启新会话、`/stop` 中止当前回答。
 - 会话按用户或群组持久化，并支持超时清理和忙碌消息队列。
+- 每个会话（群号 / QQ 号）有独立的文件夹，存放会话、系统提示词、`config.json` 和 `.env`；可以为不同会话配置不同模型、MCP 工具和 Skills。
 - 自动下载图片、文件和语音，并将本地路径作为上下文提供给 LLM。
 - 支持 pi 的多种模型提供商：Anthropic、OpenAI、OpenRouter、DeepSeek 和自定义 OpenAI 兼容接口。
 - 预留 MCP 和文件式 Skills 接口，默认不启用危险的文件或终端工具。
@@ -199,6 +200,37 @@ SnowLuma 容器应使用 Docker 的 `restart: unless-stopped`。Agent 可以使�
 ```
 
 如果消息以 @ 机器人开头，发送给 LLM 的文本会移除这个开头的 @ 和其后的空白；其他用户的 @ 和消息中间的 @ 会保留。系统命令不会添加发送者标识，因此 `@机器人 /new` 可以直接重置当前群聊会话。
+
+## 会话目录与每会话配置
+
+每个会话（私聊按 QQ 号、群聊按群号）在 `~/.snowluma-agent/conversations/` 下有一个独立文件夹，首次收到该会话的消息时自动生成：
+
+```text
+~/.snowluma-agent/
+├── config.json          # 全局默认配置
+├── .env                 # 全局密钥
+├── prompts/
+│   └── SYSTEM_DEFAULT.md
+├── skills/              # 全局 Skills 库
+└── conversations/
+    ├── 10001/           # 私聊：QQ 号
+    │   ├── config.json  # 该会话的配置（自动从全局生成，可编辑）
+    │   ├── .env         # 该会话的密钥（自动从全局生成，可编辑）
+    │   ├── prompt.md    # 该会话的系统提示词
+    │   └── session_*.json
+    └── 123456/          # 群聊：群号
+        ├── config.json
+        ├── .env
+        ├── prompt.md
+        └── session_*.json
+```
+
+会话的 `config.json` 和 `.env` 默认从全局 `config.json` / `.env` 取所需内容自动生成：
+
+- 群聊会话只包含该群相关配置（`llm`、`mcp`、`skills`、该群的 `whitelist.groups` 条目等），不包含私聊相关配置；私聊会话不包含群聊配置。
+- 会话 `.env` 只包含全局 `.env` 中 `llm.apiKeyEnv` 指向的密钥，其他密钥不会自动复制。
+- 修改某个会话的 `config.json`（如 `llm.model`、`mcp.servers`、`skills.enabled`）即可让该会话使用不同的模型、MCP 工具和 Skills；删除该文件可重新从全局配置生成。
+- 会话配置在 Agent 进程启动后读取并缓存，修改后需要重启生效；白名单本身始终以全局 `config.json` 为准。
 
 ## 安全说明
 

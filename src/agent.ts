@@ -9,6 +9,7 @@ import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { envApiKeyAuth } from "@earendil-works/pi-ai";
 import type { Config, ReplyTarget, SessionMessage } from "./types.js";
 import { llmApiKey } from "./config.js";
+import type { ConversationContext } from "./conversations.js";
 import { assistantText, sendText } from "./reply.js";
 import { safetyGate, buildTools } from "./tools.js";
 import { connectMcp, type McpRuntime } from "./mcp.js";
@@ -84,21 +85,22 @@ export async function probeLlm(config: Config): Promise<{ model: string; text: s
 }
 
 export async function createAgentController(options: {
-  config: Config;
+  conv: ConversationContext;
   systemPrompt: string;
   messages: SessionMessage[];
   target: ReplyTarget;
   qq: SnowLumaWebSocketClient;
   sessionKey: string;
 }): Promise<AgentController> {
-  const { config } = options;
-  const key = llmApiKey(config);
-  if (!key) throw new Error(`缺少 ${config.llm.apiKeyEnv}，请先配置 LLM`);
+  const { conv } = options;
+  const config = conv.config;
+  const key = llmApiKey(config, conv.env);
+  if (!key) throw new Error(`缺少 ${config.llm.apiKeyEnv}，请先配置 LLM（全局 .env 或该会话的 .env）`);
   const models = makeModels(config);
   const model = config.llm.provider === "custom" ? customModel(config) : models.getModel(config.llm.provider, config.llm.model);
   if (!model) throw new Error(`pi-ai 中找不到模型 ${config.llm.provider}/${config.llm.model}；请检查配置或锁定版本的模型目录`);
   const mcp = await connectMcp(config);
-  const skills = await listSkills(config.skillsDir);
+  const skills = await listSkills(config.skills.dir, config.skills.enabled);
   const systemPrompt = `${options.systemPrompt}\n\n${skillsPrompt(skills)}`;
   let aborted = false;
   const batchTexts: string[] = [];
@@ -107,7 +109,7 @@ export async function createAgentController(options: {
       systemPrompt,
       model,
       thinkingLevel: config.llm.thinkingLevel,
-      tools: buildTools(config, config.skillsDir, mcp.tools),
+      tools: buildTools(config, config.skills, mcp.tools),
       messages: options.messages as unknown as AgentMessage[],
     },
     streamFn: models.streamSimple.bind(models),
