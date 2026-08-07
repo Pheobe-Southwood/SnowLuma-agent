@@ -75,6 +75,7 @@ interface Worker {
   updatedAt: number;
   ready: Promise<AgentController>;
   controller?: AgentController;
+  activePrompt?: Promise<void>;
   processing: boolean;
   current: boolean;
   stopRequested: boolean;
@@ -86,6 +87,33 @@ export class SessionManager {
 
   private targetFor(inbound: InboundMessage): ReplyTarget {
     return inbound.target.kind === "private" ? { kind: "private", userId: inbound.target.userId } : { kind: "group", groupId: inbound.target.groupId };
+  }
+
+  private controllerRunning(worker: Worker): boolean {
+    return worker.controller?.isRunning() ?? false;
+  }
+
+  private async reconcileExternalRun(worker: Worker, controller: AgentController): Promise<void> {
+    try {
+      await controller.waitForIdle();
+      await worker.activePrompt;
+    } catch (error) {
+      console.error(`[session ${worker.key}] 等待 Agent idle 失败`, error);
+    }
+    if (!worker.processing || worker.controller !== controller) return;
+    if (worker.stopRequested) removeAbortedAssistantMessages(controller);
+    worker.activePrompt = undefined;
+    worker.current = false;
+    worker.busy = false;
+    worker.processing = false;
+    worker.stopRequested = false;
+    if (worker.queue.length) { worker.busy = true; void this.process(worker); }
+  }
+
+  private trackExternalRun(worker: Worker, controller: AgentController): void {
+    worker.busy = true;
+    worker.processing = true;
+    void this.reconcileExternalRun(worker, controller);
   }
 
   private createWorker(inbound: InboundMessage): Worker {
@@ -125,7 +153,10 @@ export class SessionManager {
     const position = worker.queue.length + (worker.current ? 2 : 1);
     worker.queue.push(inbound);
     worker.updatedAt = Date.now();
-    if (!worker.processing) void this.process(worker);
+    if (!worker.processing) {
+      if (worker.controller && (this.controllerRunning(worker) || worker.activePrompt)) this.trackExternalRun(worker, worker.controller);
+      else void this.process(worker);
+    }
     return { queued: position > 1, position };
   }
 
@@ -133,15 +164,18 @@ export class SessionManager {
     if (worker.processing || worker.queue.length === 0) return;
     worker.processing = true;
     const { config } = this.options;
+    let controller: AgentController | undefined;
     try {
-      const controller = await worker.ready;
+      controller = await worker.ready;
       if (worker.stopRequested) return;
       while (worker.queue.length && !worker.stopRequested) {
         const inbound = worker.queue.shift()!;
         worker.current = true;
         try {
           controller.setSystemPrompt(await readSystemPrompt(config.promptsDir, worker.sessionTarget));
-          await controller.prompt(inbound.promptText);
+          if (worker.stopRequested) break;
+          worker.activePrompt = controller.prompt(inbound.promptText);
+          await worker.activePrompt;
           if (!worker.stopRequested) {
             const envelope: SessionEnvelope = { schemaVersion, key: worker.key, updatedAt: worker.updatedAt, messages: controller.messages() as unknown as SessionMessage[] };
             await saveSession(config.session.storageDir, envelope, config.session.maxMessages);
@@ -153,6 +187,7 @@ export class SessionManager {
           }
         } finally {
           if (worker.stopRequested) removeAbortedAssistantMessages(controller);
+          worker.activePrompt = undefined;
           worker.current = false;
         }
         if (worker.pendingReset) {
@@ -168,8 +203,13 @@ export class SessionManager {
         console.error(`[session ${worker.key}]`, error);
       }
     } finally {
+      if (controller) {
+        try { await controller.waitForIdle(); } catch (error) { console.error(`[session ${worker.key}] 等待 Agent idle 失败`, error); }
+        if (worker.stopRequested) removeAbortedAssistantMessages(controller);
+      }
       worker.busy = false;
       worker.processing = false;
+      worker.activePrompt = undefined;
       worker.stopRequested = false;
       if (worker.queue.length) { worker.busy = true; void this.process(worker); }
     }
@@ -177,11 +217,15 @@ export class SessionManager {
 
   async stop(key: string): Promise<boolean> {
     const worker = this.workers.get(key);
-    if (!worker?.busy) return false;
+    const agentRunning = worker ? this.controllerRunning(worker) : false;
+    const running = !!worker && (worker.busy || worker.processing || !!worker.activePrompt || agentRunning);
+    console.log(`[session ${key}] /stop busy=${worker?.busy ?? false} processing=${worker?.processing ?? false} activePrompt=${!!worker?.activePrompt} agentStreaming=${agentRunning}`);
+    if (!running) return false;
     worker.queue.length = 0;
     worker.stopRequested = true;
     worker.controller?.abort();
-    if (worker.controller) removeAbortedAssistantMessages(worker.controller);
+    if (worker.controller && !worker.processing) this.trackExternalRun(worker, worker.controller);
+    else if (worker.controller) removeAbortedAssistantMessages(worker.controller);
     return true;
   }
 
@@ -192,12 +236,15 @@ export class SessionManager {
       return "done";
     }
     worker.queue.length = 0;
-    if (worker.busy) { worker.pendingReset = true; return "pending"; }
+    if (this.isBusy(key)) { worker.pendingReset = true; return "pending"; }
     worker.controller?.reset();
     await saveSession(this.options.config.session.storageDir, { schemaVersion, key, updatedAt: Date.now(), messages: [] }, this.options.config.session.maxMessages);
     return "done";
   }
 
-  isBusy(key: string): boolean { return this.workers.get(key)?.busy ?? false; }
+  isBusy(key: string): boolean {
+    const worker = this.workers.get(key);
+    return !!worker && (worker.busy || worker.processing || !!worker.activePrompt || this.controllerRunning(worker));
+  }
   async close(): Promise<void> { for (const worker of this.workers.values()) await worker.controller?.close(); }
 }

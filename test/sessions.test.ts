@@ -49,8 +49,10 @@ function fakeController(options: {
   abortCalls: { count: number };
   messages?: unknown[];
   promptError?: Error;
+  idlePromise?: Promise<void>;
 }): AgentController {
   const messages = options.messages ?? [];
+  const running = { value: false };
   let promptError = options.promptError;
   return {
     agent: undefined as never,
@@ -58,14 +60,21 @@ function fakeController(options: {
     prompt: async (text) => {
       options.calls.push(text);
       options.promptStarted?.();
-      await options.promptRelease;
-      if (promptError) {
-        const error = promptError;
-        promptError = undefined;
-        throw error;
+      running.value = true;
+      try {
+        await options.promptRelease;
+        if (promptError) {
+          const error = promptError;
+          promptError = undefined;
+          throw error;
+        }
+      } finally {
+        running.value = false;
       }
     },
     abort: () => { options.abortCalls.count += 1; },
+    isRunning: () => running.value,
+    waitForIdle: async () => { await options.idlePromise; },
     reset: () => undefined,
     setSystemPrompt: () => undefined,
     messages: () => messages as never,
@@ -152,5 +161,30 @@ describe("SessionManager /stop", () => {
     await manager.submit(inbound("after stop"));
     await waitUntil(() => calls.length === 2);
     expect(calls).toEqual(["current", "after stop"]);
+  });
+
+  it("uses the real Agent running state when worker bookkeeping says idle", async () => {
+    const { config, qq } = await testContext();
+    const promptStarted = deferred();
+    const promptRelease = deferred();
+    const calls: string[] = [];
+    const abortCalls = { count: 0 };
+    const controller = fakeController({ calls, abortCalls, promptStarted: promptStarted.resolve, promptRelease: promptRelease.promise, idlePromise: promptRelease.promise });
+    const manager = new SessionManager({ config, qq, createController: async () => controller });
+
+    await manager.submit(inbound("long MCP task"));
+    await promptStarted.promise;
+    const workers = (manager as unknown as { workers: Map<string, { busy: boolean; processing: boolean; activePrompt?: Promise<void> }> }).workers;
+    const worker = workers.get("private:10001")!;
+    worker.busy = false;
+    worker.processing = false;
+    worker.activePrompt = undefined;
+
+    expect(manager.isBusy("private:10001")).toBe(true);
+    expect(await manager.stop("private:10001")).toBe(true);
+    expect(abortCalls.count).toBe(1);
+    promptRelease.resolve();
+    await waitUntil(() => !manager.isBusy("private:10001"));
+    expect(calls).toEqual(["long MCP task"]);
   });
 });

@@ -23,7 +23,7 @@
 
 ### 从 npm 安装（推荐）
 
-当前已发布版本为 `0.1.2`：
+当前已发布版本为 `0.1.3`：
 
 ```bash
 npm install -g snowluma-agent

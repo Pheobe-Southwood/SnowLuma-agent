@@ -60,6 +60,8 @@ export interface AgentController {
   readonly mcp: McpRuntime;
   prompt(text: string): Promise<void>;
   abort(): void;
+  isRunning(): boolean;
+  waitForIdle(): Promise<void>;
   reset(): void;
   setSystemPrompt(prompt: string): void;
   messages(): AgentMessage[];
@@ -131,6 +133,8 @@ export async function createAgentController(options: {
       if (!aborted && config.reply.mode === "batch") for (const item of batchTexts.splice(0)) await sendText(options.qq, options.target, item, config);
     },
     abort: () => { aborted = true; agent.abort(); },
+    isRunning: () => agent.state.isStreaming,
+    waitForIdle: () => agent.waitForIdle(),
     reset: () => { aborted = false; batchTexts.length = 0; agent.reset(); },
     setSystemPrompt: (prompt) => { agent.state.systemPrompt = `${prompt}\n\n${skillsPrompt(skills)}`; },
     messages: () => agent.state.messages as AgentMessage[],
