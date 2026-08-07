@@ -34,7 +34,8 @@ export interface Config {
     defaultGroupMode: "at" | "all";
     defaultGroupSession: "shared" | "per-user";
   };
-  session: { inactivityTtlHours: number; maxMessages: number; storageDir: string };
+  session: { inactivityTtlHours: number; maxMessages: number };
+  conversationsDir: string;
   media: {
     downloadsDir: string;
     autoDownload: Array<"image" | "file" | "record" | "video">;
@@ -58,7 +59,7 @@ export interface Config {
   };
   commandPrefix: string;
   queue: { maxLength: number; notifyFirstOnly: boolean };
-  skillsDir: string;
+  skills: { dir: string; enabled: string[] };
   mcp: { servers: McpServerConfig[] };
   blockedToolNames: string[];
 }

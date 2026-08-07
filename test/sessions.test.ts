@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { SnowLumaWebSocketClient } from "@snowluma/sdk";
 import type { AgentController } from "../src/agent.js";
 import { defaultConfig } from "../src/config.js";
+import { ConversationStore } from "../src/conversations.js";
 import { SessionManager } from "../src/sessions.js";
 import type { InboundMessage, OneBotMessageEvent } from "../src/types.js";
 
@@ -82,21 +83,22 @@ function fakeController(options: {
   };
 }
 
-async function testContext(): Promise<{ config: ReturnType<typeof defaultConfig>; qq: SnowLumaWebSocketClient; replies: string[] }> {
+async function testContext(): Promise<{ config: ReturnType<typeof defaultConfig>; qq: SnowLumaWebSocketClient; replies: string[]; store: ConversationStore; dir: string }> {
   const dir = await mkdtemp(join(tmpdir(), "snowluma-stop-"));
   const config = defaultConfig(dir);
-  config.session.storageDir = join(dir, "sessions");
+  config.conversationsDir = join(dir, "conversations");
   config.promptsDir = join(dir, "prompts");
   await mkdir(config.promptsDir, { recursive: true });
   await writeFile(join(config.promptsDir, "SYSTEM_DEFAULT.md"), "system prompt\n");
   const replies: string[] = [];
   const qq = { sendPrivateMessage: async (_userId: number, text: string) => { replies.push(text); } } as SnowLumaWebSocketClient;
-  return { config, qq, replies };
+  const store = new ConversationStore({ config, dir });
+  return { config, qq, replies, store, dir };
 }
 
 describe("SessionManager /stop", () => {
   it("stops a session while its controller is still initializing", async () => {
-    const { config, qq } = await testContext();
+    const { config, qq, store } = await testContext();
     const controllerRelease = deferred();
     const controllerStarted = deferred();
     const calls: string[] = [];
@@ -104,6 +106,7 @@ describe("SessionManager /stop", () => {
     const controller = fakeController({ calls, abortCalls });
     const manager = new SessionManager({
       config,
+      store,
       qq,
       createController: async () => {
         controllerStarted.resolve();
@@ -128,7 +131,7 @@ describe("SessionManager /stop", () => {
   });
 
   it("aborts the current prompt, clears queued messages, and accepts a later message", async () => {
-    const { config, qq, replies } = await testContext();
+    const { config, qq, replies, store } = await testContext();
     const promptStarted = deferred();
     const promptRelease = deferred();
     const calls: string[] = [];
@@ -143,6 +146,7 @@ describe("SessionManager /stop", () => {
     });
     const manager = new SessionManager({
       config,
+      store,
       qq,
       createController: async () => controller,
     });
@@ -164,13 +168,13 @@ describe("SessionManager /stop", () => {
   });
 
   it("uses the real Agent running state when worker bookkeeping says idle", async () => {
-    const { config, qq } = await testContext();
+    const { config, qq, store } = await testContext();
     const promptStarted = deferred();
     const promptRelease = deferred();
     const calls: string[] = [];
     const abortCalls = { count: 0 };
     const controller = fakeController({ calls, abortCalls, promptStarted: promptStarted.resolve, promptRelease: promptRelease.promise, idlePromise: promptRelease.promise });
-    const manager = new SessionManager({ config, qq, createController: async () => controller });
+    const manager = new SessionManager({ config, store, qq, createController: async () => controller });
 
     await manager.submit(inbound("long MCP task"));
     await promptStarted.promise;

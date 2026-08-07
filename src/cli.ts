@@ -2,11 +2,12 @@ import { access } from "node:fs/promises";
 import { appDir, initWorkspace, loadConfig, llmConfigurationStatus } from "./config.js";
 import { checkQq, createQqClient } from "./qq.js";
 import { listSkills } from "./skills.js";
-import { buildInbound, isWhitelisted, promptForLlm, promptTextFromEvent, messageSegments } from "./filter.js";
+import { buildInbound, isWhitelisted, promptForLlm, promptTextFromEvent, messageSegments, sessionTarget } from "./filter.js";
 import { commandAllowed, parseCommand, unescapeCommandText } from "./commands.js";
 import { processMedia } from "./media.js";
 import { noticeText, sendText } from "./reply.js";
 import { SessionManager } from "./sessions.js";
+import { ConversationStore } from "./conversations.js";
 import { createAgentController, probeLlm } from "./agent.js";
 import type { InboundMessage, OneBotMessageEvent, ReplyTarget } from "./types.js";
 
@@ -52,7 +53,7 @@ async function commandDoctor(args: string[]): Promise<void> {
 async function commandSkills(args: string[]): Promise<void> {
   const dir = argDir(args);
   const config = await loadConfig(dir);
-  const skills = await listSkills(config.skillsDir);
+  const skills = await listSkills(config.skills.dir);
   if (!skills.length) { console.log("没有已安装的 skills。"); return; }
   for (const skill of skills) console.log(`${skill.name}\t${skill.description}`);
 }
@@ -70,39 +71,49 @@ async function commandStart(args: string[]): Promise<void> {
   const qq = createQqClient(config);
   await qq.connect();
   console.log(`SnowLuma 已连接：${config.snowluma.wsUrl}`);
+  const store = new ConversationStore({ config, dir });
   const manager = new SessionManager({
     config,
+    store,
     qq,
-    createController: (target, sessionKey, messages, systemPrompt) => createAgentController({ config, target, sessionKey, messages, systemPrompt, qq }),
+    createController: (target, sessionKey, messages, systemPrompt, conv) => createAgentController({ conv, target, sessionKey, messages, systemPrompt, qq }),
   });
   const handle = async (event: OneBotMessageEvent): Promise<void> => {
     if (!isWhitelisted(event, config)) return;
+    let conv;
+    try {
+      conv = await store.get(sessionTarget(event, config));
+    } catch (error) {
+      console.error(`[conversation] 会话初始化失败：`, error);
+      return;
+    }
+    if (!isWhitelisted(event, conv.config)) return;
     const segments = messageSegments(event);
     const plain = promptTextFromEvent(event, segments);
-    const inbound = buildInbound(event, config, plain);
+    const inbound = buildInbound(event, conv.config, plain);
     if (!inbound) return;
-    const command = parseCommand(plain, config.commandPrefix);
+    const command = parseCommand(plain, conv.config.commandPrefix);
     if (command) {
-      if (!commandAllowed(command, inbound, config)) { await sendText(qq, targetOf(inbound), config.reply.commandNotAllowedNotice, config); return; }
+      if (!commandAllowed(command, inbound, conv.config)) { await sendText(qq, targetOf(inbound), conv.config.reply.commandNotAllowedNotice, conv.config); return; }
       if (command.name === "stop") {
         const stopped = await manager.stop(inbound.sessionKey);
-        await sendText(qq, targetOf(inbound), stopped ? config.reply.stopNotice : config.reply.stopIdleNotice, config);
+        await sendText(qq, targetOf(inbound), stopped ? conv.config.reply.stopNotice : conv.config.reply.stopIdleNotice, conv.config);
       } else if (command.name === "new") {
         const status = await manager.newSession(inbound.sessionKey);
-        await sendText(qq, targetOf(inbound), config.reply.newSessionNotice, config);
+        await sendText(qq, targetOf(inbound), conv.config.reply.newSessionNotice, conv.config);
         if (status === "pending") console.log(`[${inbound.sessionKey}] /new 将在当前回答结束后生效`);
       } else {
-        await sendText(qq, targetOf(inbound), config.reply.unknownCommandNotice, config);
+        await sendText(qq, targetOf(inbound), conv.config.reply.unknownCommandNotice, conv.config);
       }
       return;
     }
-    inbound.promptText = unescapeCommandText(plain, config.commandPrefix);
-    const media = await processMedia(inbound, config, qq);
+    inbound.promptText = unescapeCommandText(plain, conv.config.commandPrefix);
+    const media = await processMedia(inbound, conv.config, qq);
     inbound.promptText = promptForLlm(event, media.text);
-    if (media.failed) await sendText(qq, targetOf(inbound), config.media.downloadFailedNotice, config);
+    if (media.failed) await sendText(qq, targetOf(inbound), conv.config.media.downloadFailedNotice, conv.config);
     const result = await manager.submit(inbound);
-    if (result.position === -1) await sendText(qq, targetOf(inbound), config.reply.queueFullNotice, config);
-    else if (result.queued && (!config.queue.notifyFirstOnly || result.position === 2)) await sendText(qq, targetOf(inbound), noticeText(config.reply.queueNotice, result.position), config);
+    if (result.position === -1) await sendText(qq, targetOf(inbound), conv.config.reply.queueFullNotice, conv.config);
+    else if (result.queued && (!conv.config.queue.notifyFirstOnly || result.position === 2)) await sendText(qq, targetOf(inbound), noticeText(conv.config.reply.queueNotice, result.position), conv.config);
   };
   qq.onPrivateMessage(handle);
   qq.onGroupMessage(handle);

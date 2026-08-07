@@ -2,9 +2,11 @@ import { access, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promi
 import { dirname, join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SnowLumaWebSocketClient } from "@snowluma/sdk";
-import { readSystemPrompt } from "./system_prompt.js";
+import { readConversationPrompt } from "./system_prompt.js";
 import { sendText, noticeText } from "./reply.js";
 import type { AgentController } from "./agent.js";
+import type { ConversationContext, ConversationStore } from "./conversations.js";
+import { conversationDirFromKey } from "./conversations.js";
 import type { Config, InboundMessage, ReplyTarget, SessionEnvelope, SessionMessage, SessionTarget } from "./types.js";
 
 const schemaVersion = 1 as const;
@@ -56,8 +58,9 @@ export async function saveSession(dir: string, envelope: SessionEnvelope, maxMes
 
 export interface SessionManagerOptions {
   config: Config;
+  store: ConversationStore;
   qq: SnowLumaWebSocketClient;
-  createController: (target: ReplyTarget, sessionKey: string, messages: SessionMessage[], systemPrompt: string) => Promise<AgentController>;
+  createController: (target: ReplyTarget, sessionKey: string, messages: SessionMessage[], systemPrompt: string, conv: ConversationContext) => Promise<AgentController>;
 }
 
 function removeAbortedAssistantMessages(controller: AgentController): void {
@@ -69,6 +72,7 @@ interface Worker {
   key: string;
   target: ReplyTarget;
   sessionTarget: SessionTarget;
+  conv?: ConversationContext;
   queue: InboundMessage[];
   busy: boolean;
   pendingReset: boolean;
@@ -134,9 +138,11 @@ export class SessionManager {
     };
     this.workers.set(inbound.sessionKey, worker);
     worker.ready = (async () => {
-      const envelope = await loadSession(config.session.storageDir, inbound.sessionKey, config.session.inactivityTtlHours * 3600_000);
-      const prompt = await readSystemPrompt(config.promptsDir, inbound.target);
-      return this.options.createController(target, inbound.sessionKey, envelope.messages, prompt);
+      const conv = await this.options.store.get(inbound.target);
+      worker.conv = conv;
+      const envelope = await loadSession(conv.dir, inbound.sessionKey, config.session.inactivityTtlHours * 3600_000);
+      const prompt = await readConversationPrompt(conv.dir, config.promptsDir);
+      return this.options.createController(target, inbound.sessionKey, envelope.messages, prompt, conv);
     })();
     worker.ready.then((controller) => {
       worker.controller = controller;
@@ -172,13 +178,13 @@ export class SessionManager {
         const inbound = worker.queue.shift()!;
         worker.current = true;
         try {
-          controller.setSystemPrompt(await readSystemPrompt(config.promptsDir, worker.sessionTarget));
+          controller.setSystemPrompt(await readConversationPrompt(worker.conv!.dir, config.promptsDir));
           if (worker.stopRequested) break;
           worker.activePrompt = controller.prompt(inbound.promptText);
           await worker.activePrompt;
           if (!worker.stopRequested) {
             const envelope: SessionEnvelope = { schemaVersion, key: worker.key, updatedAt: worker.updatedAt, messages: controller.messages() as unknown as SessionMessage[] };
-            await saveSession(config.session.storageDir, envelope, config.session.maxMessages);
+            await saveSession(worker.conv!.dir, envelope, config.session.maxMessages);
           }
         } catch (error) {
           if (!worker.stopRequested) {
@@ -193,7 +199,7 @@ export class SessionManager {
         if (worker.pendingReset) {
           controller.reset();
           worker.pendingReset = false;
-          await saveSession(config.session.storageDir, { schemaVersion, key: worker.key, updatedAt: Date.now(), messages: [] }, config.session.maxMessages);
+          await saveSession(worker.conv!.dir, { schemaVersion, key: worker.key, updatedAt: Date.now(), messages: [] }, config.session.maxMessages);
         }
       }
     } catch (error) {
@@ -231,14 +237,15 @@ export class SessionManager {
 
   async newSession(key: string): Promise<"pending" | "done" | "missing"> {
     const worker = this.workers.get(key);
+    const dir = conversationDirFromKey(this.options.config, key);
     if (!worker) {
-      await saveSession(this.options.config.session.storageDir, { schemaVersion, key, updatedAt: Date.now(), messages: [] }, this.options.config.session.maxMessages);
+      await saveSession(dir, { schemaVersion, key, updatedAt: Date.now(), messages: [] }, this.options.config.session.maxMessages);
       return "done";
     }
     worker.queue.length = 0;
     if (this.isBusy(key)) { worker.pendingReset = true; return "pending"; }
     worker.controller?.reset();
-    await saveSession(this.options.config.session.storageDir, { schemaVersion, key, updatedAt: Date.now(), messages: [] }, this.options.config.session.maxMessages);
+    await saveSession(dir, { schemaVersion, key, updatedAt: Date.now(), messages: [] }, this.options.config.session.maxMessages);
     return "done";
   }
 

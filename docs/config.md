@@ -85,12 +85,42 @@ snowluma-agent doctor --llm
 
 ## 路径与会话
 
-会话、媒体和失败发送记录默认保存在 `~/.snowluma-agent/data` 下。可以在配置中修改以下路径：
+会话、提示词、媒体和失败发送记录默认保存在 `~/.snowluma-agent` 下。可以在配置中修改以下路径：
 
-- `session.storageDir`：会话文件。
+- `conversationsDir`：会话根目录，默认 `conversations`。每个会话（私聊按 QQ 号、群聊按群号）在该目录下有一个独立文件夹，存放该会话的 `session_*.json`、`prompt.md`、`config.json` 和 `.env`。
+- `promptsDir`：全局默认系统提示词 `SYSTEM_DEFAULT.md` 所在目录；每个会话的 `prompt.md` 首次使用时从它复制。
 - `media.downloadsDir`：媒体文件。
 - `reply.failedSendDir`：发送失败记录。
-- `promptsDir`：按用户或群组区分的系统提示词。
-- `skillsDir`：Skills 目录。
+- `skills.dir`：全局 Skills 库目录。
 
 路径应指向 Agent 用户有权限访问的目录，不要指向包含其他用户敏感数据的目录。
+
+## 每会话配置
+
+首次收到某个私聊或群聊消息时，Agent 会在 `conversationsDir` 下自动创建该会话的文件夹，并生成 `config.json` 和 `.env`，内容取自全局配置中与该会话相关的部分：
+
+- 会话 `config.json` 包含 `llm`、`session`、`mcp`、`skills`、`reply.mode`、`blockedToolNames`；群聊还会包含该群在 `whitelist.groups` 中的条目（`mode` / `session` / `commandAllowlist`），不包含私聊相关配置。
+- 会话 `.env` 只包含全局 `.env` 中 `llm.apiKeyEnv` 指向的密钥；修改会话 `config.json` 的 `llm.apiKeyEnv` 后，缺失的密钥会在下次使用时自动补入。
+
+会话配置会叠加在全局配置之上（未写的字段回落到全局配置）。例如让群 123456 单独使用 DeepSeek、只开放部分 Skills：
+
+```json
+{
+  "llm": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "thinkingLevel": "medium",
+    "baseUrl": null,
+    "apiKeyEnv": "DEEPSEEK_API_KEY"
+  },
+  "skills": {
+    "dir": "/root/.snowluma-agent/skills",
+    "enabled": ["demo"]
+  },
+  "mcp": {
+    "servers": []
+  }
+}
+```
+
+`skills.enabled` 为空数组表示使用全部 Skills；填入名称后该会话只能使用列出的 Skills。会话配置在进程启动后读取并缓存，修改后需要重启 Agent 生效。白名单始终以全局 `config.json` 为准，删除会话文件夹即可清空该会话的所有数据和配置。

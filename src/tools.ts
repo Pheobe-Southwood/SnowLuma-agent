@@ -2,9 +2,9 @@ import type { AgentTool, BeforeToolCallResult } from "@earendil-works/pi-agent-c
 import type { Config } from "./types.js";
 import { buildUseSkillTool } from "./skills.js";
 
-export function buildTools(config: Config, skillsDir: string, mcpTools: AgentTool[] = []): AgentTool[] {
+export function buildTools(config: Config, skills: { dir: string; enabled: string[] }, mcpTools: AgentTool[] = []): AgentTool[] {
   // The built-in table intentionally contains only the read-only skills tool.
-  return [buildUseSkillTool(skillsDir), ...mcpTools].filter((tool, index, list) => list.findIndex((item) => item.name === tool.name) === index);
+  return [buildUseSkillTool(skills), ...mcpTools].filter((tool, index, list) => list.findIndex((item) => item.name === tool.name) === index);
 }
 
 export function safetyGate(config: Config, toolName: string): BeforeToolCallResult | undefined {
