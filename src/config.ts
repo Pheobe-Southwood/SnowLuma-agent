@@ -64,13 +64,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 export function mergeConfig(base: Config, input: Record<string, unknown>): Config {
   const result = structuredClone(base) as Config;
-  const apply = (target: Record<string, unknown>, source: Record<string, unknown>): void => {
+  // Top-level: only known keys (ignore legacy storageDir/skillsDir). Nested: allow new keys (e.g. group ids).
+  const apply = (target: Record<string, unknown>, source: Record<string, unknown>, allowNewKeys: boolean): void => {
     for (const [key, value] of Object.entries(source)) {
-      if (isObject(value) && isObject(target[key])) apply(target[key] as Record<string, unknown>, value);
-      else if (key in target) target[key] = value;
+      if (isObject(value) && isObject(target[key])) apply(target[key] as Record<string, unknown>, value, true);
+      else if (allowNewKeys || key in target) target[key] = value;
     }
   };
-  apply(result as unknown as Record<string, unknown>, input);
+  apply(result as unknown as Record<string, unknown>, input, false);
   return result;
 }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultConfig } from "../src/config.js";
+import { defaultConfig, mergeConfig } from "../src/config.js";
 import { buildInbound, isWhitelisted, messageSegments, promptForLlm, promptTextFromEvent, sessionKey, textFromSegments } from "../src/filter.js";
 import { parseCommand, unescapeCommandText } from "../src/commands.js";
 import { assistantText } from "../src/reply.js";
@@ -24,6 +24,24 @@ function event(overrides: Partial<OneBotMessageEvent> = {}): OneBotMessageEvent 
     ...overrides,
   };
 }
+
+describe("mergeConfig", () => {
+  it("adds nested whitelist group ids while ignoring unknown top-level keys", () => {
+    const merged = mergeConfig(defaultConfig("/tmp/snowluma-test"), {
+      skillsDir: "/legacy/skills",
+      whitelist: {
+        private: [10001],
+        groups: { "1101061750": { mode: "at", session: "shared" } },
+      },
+      llm: { model: "merged-model" },
+    });
+    expect(merged.whitelist.private).toEqual([10001]);
+    expect(merged.whitelist.groups["1101061750"]).toEqual({ mode: "at", session: "shared" });
+    expect(merged.llm.model).toBe("merged-model");
+    expect(merged.llm.provider).toBe("anthropic");
+    expect((merged as unknown as { skillsDir?: string }).skillsDir).toBeUndefined();
+  });
+});
 
 describe("filter and commands", () => {
   it("enforces private/group whitelist and @ mode", () => {
