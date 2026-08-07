@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
 import { access } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { appDir, initWorkspace, loadConfig, llmConfigurationStatus } from "./config.js";
 import { checkQq, createQqClient } from "./qq.js";
 import { listSkills } from "./skills.js";
@@ -11,8 +14,10 @@ import { ConversationStore } from "./conversations.js";
 import { createAgentController, probeLlm } from "./agent.js";
 import type { InboundMessage, OneBotMessageEvent, ReplyTarget } from "./types.js";
 
+const VERSION = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")).version as string;
+
 function usage(): void {
-  console.log(`snowluma-agent 0.1.3\n\n用法：\n  snowluma-agent init [--systemd]\n  snowluma-agent start\n  snowluma-agent doctor\n  snowluma-agent skills list\n  snowluma-agent --version`);
+  console.log(`snowluma-agent ${VERSION}\n\n用法：\n  snowluma-agent init [--systemd]\n  snowluma-agent start\n  snowluma-agent doctor\n  snowluma-agent skills list\n  snowluma-agent --version`);
 }
 
 function argDir(args: string[]): string { const index = args.indexOf("--dir"); return appDir(index >= 0 ? args[index + 1] : undefined); }
@@ -125,7 +130,7 @@ async function commandStart(args: string[]): Promise<void> {
 
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const [command, subcommand] = argv;
-  if (command === "--version" || command === "-v") { console.log("0.1.3"); return; }
+  if (command === "--version" || command === "-v") { console.log(VERSION); return; }
   if (command === "init") return commandInit(argv);
   if (command === "doctor") return commandDoctor(argv);
   if (command === "skills" && subcommand === "list") return commandSkills(argv);
