@@ -6,10 +6,11 @@ import { appDir, initWorkspace, loadConfig, llmConfigurationStatus } from "./con
 import { checkQq, createQqClient } from "./qq.js";
 import { listSkills } from "./skills.js";
 import { buildInbound, conversationTarget, isAdmitted, isWhitelisted, promptForLlm, promptTextFromEvent, messageSegments } from "./filter.js";
-import { commandAllowed, parseCommand, unescapeCommandText } from "./commands.js";
+import { commandAllowed, formatHelp, parseCommand, unescapeCommandText } from "./commands.js";
 import { processMedia } from "./media.js";
 import { noticeText, sendText } from "./reply.js";
 import { SessionManager } from "./sessions.js";
+import { formatStatus } from "./status.js";
 import { ConversationStore } from "./conversations.js";
 import { createAgentController, probeLlm } from "./agent.js";
 import type { InboundMessage, OneBotMessageEvent, ReplyTarget } from "./types.js";
@@ -107,6 +108,11 @@ async function commandStart(args: string[]): Promise<void> {
         const status = await manager.newSession(inbound.sessionKey);
         await sendText(qq, targetOf(inbound), conv.config.reply.newSessionNotice, conv.config);
         if (status === "pending") console.log(`[${inbound.sessionKey}] /new 将在当前回答结束后生效`);
+      } else if (command.name === "help") {
+        await sendText(qq, targetOf(inbound), formatHelp(conv.config.commandPrefix, conv.config.reply.helpExtra, conv.config.reply.helpText), conv.config);
+      } else if (command.name === "status") {
+        const snap = await manager.getStatus(inbound);
+        await sendText(qq, targetOf(inbound), formatStatus(conv.config.reply.statusTemplate, snap), conv.config);
       } else {
         await sendText(qq, targetOf(inbound), conv.config.reply.unknownCommandNotice, conv.config);
       }

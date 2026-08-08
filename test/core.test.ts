@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, initWorkspace, loadConfig, mergeConfig, parseIdList } from "../src/config.js";
 import { buildInbound, isAdmitted, isWhitelisted, messageSegments, promptForLlm, promptTextFromEvent, sessionKey, textFromSegments } from "../src/filter.js";
-import { parseCommand, unescapeCommandText } from "../src/commands.js";
+import { formatHelp, parseCommand, unescapeCommandText } from "../src/commands.js";
+import { accumulateUsage, blankUsage, extractMessageUsage, formatDuration, formatStatus, type StatusSnapshot } from "../src/status.js";
 import { assistantText } from "../src/reply.js";
 import { listSkills, useSkill } from "../src/skills.js";
 import { loadSession, saveSession } from "../src/sessions.js";
@@ -135,8 +136,54 @@ describe("filter and commands", () => {
 
   it("keeps slash commands out of escaped prompts", () => {
     expect(parseCommand("/stop")?.name).toBe("stop");
+    expect(parseCommand("/help")?.name).toBe("help");
+    expect(parseCommand("/status")?.name).toBe("status");
+    expect(parseCommand("//help")).toBeUndefined();
     expect(parseCommand("//stop")).toBeUndefined();
     expect(unescapeCommandText("//stop")).toBe("/stop");
+  });
+
+  it("formats help from command registry and config overrides", () => {
+    const auto = formatHelp("/");
+    expect(auto).toContain("/new —");
+    expect(auto).toContain("/stop —");
+    expect(auto).toContain("/help —");
+    expect(auto).toContain("/status —");
+    expect(formatHelp("!", undefined, "自定义帮助")).toBe("自定义帮助");
+    expect(formatHelp("/", "更多说明")).toContain("更多说明");
+  });
+
+  it("formats status template and usage helpers", () => {
+    expect(formatDuration(500)).toBe("不到1秒");
+    expect(formatDuration(65_000)).toBe("1分5秒");
+    expect(extractMessageUsage({ role: "assistant", usage: { input: 10, output: 5, totalTokens: 15 } })).toEqual({ input: 10, output: 5, total: 15 });
+    const usage = accumulateUsage(blankUsage(), [
+      { role: "user" },
+      { role: "assistant", usage: { input: 3, output: 2, totalTokens: 5 } },
+      { role: "assistant", usage: { input: 7, output: 1, totalTokens: 8 } },
+    ], 0);
+    expect(usage).toEqual({ input: 10, output: 3, total: 13, lastInput: 7, lastOutput: 1, lastTotal: 8 });
+    const snap: StatusSnapshot = {
+      chatType: "私聊",
+      sessionMode: "—",
+      sessionKey: "private:1",
+      busy: false,
+      processing: false,
+      busyText: "空闲",
+      processingDuration: "空闲",
+      sessionDuration: "1分",
+      queueLength: 0,
+      queueMax: 10,
+      messageCount: 2,
+      pendingReset: "否",
+      model: "deepseek/x",
+      replyMode: "realtime",
+      sessionTokens: "10/3/13",
+      lastTokens: "7/1/8",
+      lastActive: "不到1秒",
+      uptime: "2分",
+    };
+    expect(formatStatus("类型：{chatType} 状态：{busyText} token：{sessionTokens}", snap)).toBe("类型：私聊 状态：空闲 token：10/3/13");
   });
 
   it("removes only a leading self mention from group prompt text", () => {
@@ -221,6 +268,10 @@ describe("media and sessions", () => {
     const envelope = { schemaVersion: 1 as const, key: "private:1", updatedAt: 1000, messages: [{ role: "user" as const, content: "hello" }] };
     await saveSession(dir, envelope, 60);
     expect((await loadSession(dir, "private:1", 100, 1050)).messages).toHaveLength(1);
-    expect((await loadSession(dir, "private:1", 10, 1050)).messages).toHaveLength(0);
+    const expired = await loadSession(dir, "private:1", 10, 1050);
+    expect(expired.messages).toHaveLength(0);
+    expect(expired.updatedAt).toBe(1000);
+    expect(expired.createdAt).toBe(1050);
+    expect(expired.usage).toEqual({ input: 0, output: 0, total: 0, lastInput: 0, lastOutput: 0, lastTotal: 0 });
   });
 });

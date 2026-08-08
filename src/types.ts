@@ -55,6 +55,9 @@ export interface Config {
     newSessionNotice: string;
     unknownCommandNotice: string;
     commandNotAllowedNotice: string;
+    helpText?: string | null;
+    helpExtra?: string | null;
+    statusTemplate: string;
     failedSendDir: string;
   };
   commandPrefix: string;
@@ -85,11 +88,22 @@ export interface SessionMessage {
   [key: string]: unknown;
 }
 
+export interface SessionUsage {
+  input: number;
+  output: number;
+  total: number;
+  lastInput: number;
+  lastOutput: number;
+  lastTotal: number;
+}
+
 export interface SessionEnvelope {
   schemaVersion: 1;
   key: string;
   updatedAt: number;
+  createdAt?: number;
   messages: SessionMessage[];
+  usage?: SessionUsage;
 }
 
 export type SessionTarget =

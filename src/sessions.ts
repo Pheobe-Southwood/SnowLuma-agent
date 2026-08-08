@@ -1,13 +1,21 @@
-import { access, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { SnowLumaWebSocketClient } from "@snowluma/sdk";
 import { readConversationPrompt } from "./system_prompt.js";
-import { sendText, noticeText } from "./reply.js";
+import { sendText } from "./reply.js";
 import type { AgentController } from "./agent.js";
 import type { ConversationContext, ConversationStore } from "./conversations.js";
 import { conversationDirFromKey } from "./conversations.js";
-import type { Config, InboundMessage, ReplyTarget, SessionEnvelope, SessionMessage, SessionTarget } from "./types.js";
+import {
+  accumulateUsage,
+  blankUsage,
+  formatDuration,
+  formatTokens,
+  normalizeUsage,
+  processStartedAt,
+  type StatusSnapshot,
+} from "./status.js";
+import type { Config, InboundMessage, ReplyTarget, SessionEnvelope, SessionMessage, SessionTarget, SessionUsage } from "./types.js";
 
 const schemaVersion = 1 as const;
 export const sessionFileName = (key: string): string => Buffer.from(key).toString("base64url") + ".json";
@@ -30,13 +38,22 @@ function pruneMessages(messages: SessionMessage[], maxMessages: number): Session
   return messages.slice(start);
 }
 
+function blankEnvelope(key: string, now = Date.now()): SessionEnvelope {
+  return { schemaVersion, key, updatedAt: now, createdAt: now, messages: [], usage: blankUsage() };
+}
+
 export async function loadSession(dir: string, key: string, ttlMs: number, now = Date.now()): Promise<SessionEnvelope> {
-  const blank: SessionEnvelope = { schemaVersion, key, updatedAt: now, messages: [] };
+  const blank = blankEnvelope(key, now);
   try {
     const parsed = JSON.parse(await readFile(sessionPath(dir, key), "utf8")) as Partial<SessionEnvelope>;
     if (parsed.schemaVersion !== schemaVersion || parsed.key !== key || !Number.isFinite(parsed.updatedAt) || !Array.isArray(parsed.messages) || !parsed.messages.every(validMessage)) throw new Error("schema");
-    if (now - parsed.updatedAt! > ttlMs) return blank;
-    return { schemaVersion, key, updatedAt: parsed.updatedAt!, messages: parsed.messages as SessionMessage[] };
+    // TTL 过期：清空记忆并开启新会话时钟，但保留上次真实活跃时间供 /status 展示
+    if (now - parsed.updatedAt! > ttlMs) {
+      return { ...blank, updatedAt: parsed.updatedAt! };
+    }
+    const createdAt = typeof parsed.createdAt === "number" && Number.isFinite(parsed.createdAt) ? parsed.createdAt : parsed.updatedAt!;
+    const usage = normalizeUsage(parsed.usage) ?? blankUsage();
+    return { schemaVersion, key, updatedAt: parsed.updatedAt!, createdAt, messages: parsed.messages as SessionMessage[], usage };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return blank;
     const path = sessionPath(dir, key);
@@ -48,7 +65,14 @@ export async function loadSession(dir: string, key: string, ttlMs: number, now =
 export async function saveSession(dir: string, envelope: SessionEnvelope, maxMessages: number): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700).catch(() => undefined);
-  const output: SessionEnvelope = { ...envelope, messages: pruneMessages(envelope.messages, maxMessages) };
+  const createdAt = envelope.createdAt ?? envelope.updatedAt;
+  const usage = envelope.usage ?? blankUsage();
+  const output: SessionEnvelope = {
+    ...envelope,
+    createdAt,
+    usage,
+    messages: pruneMessages(envelope.messages, maxMessages),
+  };
   const path = sessionPath(dir, envelope.key);
   const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(temp, `${JSON.stringify(output, null, 2)}\n`, { mode: 0o600 });
@@ -81,12 +105,24 @@ interface Worker {
   busy: boolean;
   pendingReset: boolean;
   updatedAt: number;
+  sessionCreatedAt: number;
+  usage: SessionUsage;
+  processingStartedAt?: number;
   ready: Promise<AgentController>;
   controller?: AgentController;
   activePrompt?: Promise<void>;
   processing: boolean;
   current: boolean;
   stopRequested: boolean;
+}
+
+function chatTypeLabel(target: SessionTarget): string {
+  return target.kind === "private" ? "私聊" : "群聊";
+}
+
+function sessionModeLabel(target: SessionTarget): string {
+  if (target.kind === "private") return "—";
+  return target.userId !== undefined ? "每人单独会话" : "共享会话";
 }
 
 export class SessionManager {
@@ -101,6 +137,12 @@ export class SessionManager {
     return worker.controller?.isRunning() ?? false;
   }
 
+  private resetSessionState(worker: Worker, now = Date.now()): void {
+    worker.sessionCreatedAt = now;
+    worker.usage = blankUsage();
+    worker.updatedAt = now;
+  }
+
   private async reconcileExternalRun(worker: Worker, controller: AgentController): Promise<void> {
     try {
       await controller.waitForIdle();
@@ -110,6 +152,7 @@ export class SessionManager {
     if (!worker.processing || worker.controller !== controller) return;
     if (worker.stopRequested) removeAbortedAssistantMessages(controller);
     worker.activePrompt = undefined;
+    worker.processingStartedAt = undefined;
     worker.current = false;
     worker.busy = false;
     worker.processing = false;
@@ -120,12 +163,14 @@ export class SessionManager {
   private trackExternalRun(worker: Worker, controller: AgentController): void {
     worker.busy = true;
     worker.processing = true;
+    if (!worker.processingStartedAt) worker.processingStartedAt = Date.now();
     void this.reconcileExternalRun(worker, controller);
   }
 
   private createWorker(inbound: InboundMessage): Worker {
     const { config } = this.options;
     const target = this.targetFor(inbound);
+    const now = Date.now();
     const worker: Worker = {
       key: inbound.sessionKey,
       target,
@@ -133,7 +178,9 @@ export class SessionManager {
       queue: [],
       busy: true,
       pendingReset: false,
-      updatedAt: Date.now(),
+      updatedAt: now,
+      sessionCreatedAt: now,
+      usage: blankUsage(),
       ready: Promise.resolve(undefined as never),
       processing: false,
       current: false,
@@ -144,6 +191,9 @@ export class SessionManager {
       const conv = await this.options.store.get(inbound.target);
       worker.conv = conv;
       const envelope = await loadSession(conv.dir, inbound.sessionKey, config.session.inactivityTtlHours * 3600_000);
+      worker.sessionCreatedAt = envelope.createdAt ?? envelope.updatedAt;
+      worker.usage = envelope.usage ?? blankUsage();
+      worker.updatedAt = envelope.updatedAt;
       const prompt = await readConversationPrompt(conv.dir, config.promptsDir);
       return this.options.createController(target, inbound.sessionKey, envelope.messages, prompt, conv);
     })();
@@ -183,10 +233,22 @@ export class SessionManager {
         try {
           controller.setSystemPrompt(await readConversationPrompt(worker.conv!.dir, config.promptsDir));
           if (worker.stopRequested) break;
+          const beforeCount = controller.messages().length;
+          worker.processingStartedAt = Date.now();
           worker.activePrompt = controller.prompt(inbound.promptText);
           await worker.activePrompt;
           if (!worker.stopRequested) {
-            const envelope: SessionEnvelope = { schemaVersion, key: worker.key, updatedAt: worker.updatedAt, messages: controller.messages() as unknown as SessionMessage[] };
+            const messages = controller.messages() as unknown as SessionMessage[];
+            worker.usage = accumulateUsage(worker.usage, messages, beforeCount);
+            worker.updatedAt = Date.now();
+            const envelope: SessionEnvelope = {
+              schemaVersion,
+              key: worker.key,
+              updatedAt: worker.updatedAt,
+              createdAt: worker.sessionCreatedAt,
+              messages,
+              usage: worker.usage,
+            };
             await saveSession(worker.conv!.dir, envelope, config.session.maxMessages);
           }
         } catch (error) {
@@ -197,12 +259,14 @@ export class SessionManager {
         } finally {
           if (worker.stopRequested) removeAbortedAssistantMessages(controller);
           worker.activePrompt = undefined;
+          worker.processingStartedAt = undefined;
           worker.current = false;
         }
         if (worker.pendingReset) {
           controller.reset();
           worker.pendingReset = false;
-          await saveSession(worker.conv!.dir, { schemaVersion, key: worker.key, updatedAt: Date.now(), messages: [] }, config.session.maxMessages);
+          this.resetSessionState(worker);
+          await saveSession(worker.conv!.dir, blankEnvelope(worker.key, worker.updatedAt), config.session.maxMessages);
         }
       }
     } catch (error) {
@@ -219,6 +283,7 @@ export class SessionManager {
       worker.busy = false;
       worker.processing = false;
       worker.activePrompt = undefined;
+      worker.processingStartedAt = undefined;
       worker.stopRequested = false;
       if (worker.queue.length) { worker.busy = true; void this.process(worker); }
     }
@@ -241,14 +306,16 @@ export class SessionManager {
   async newSession(key: string): Promise<"pending" | "done" | "missing"> {
     const worker = this.workers.get(key);
     const dir = conversationDirFromKey(this.options.config, key);
+    const now = Date.now();
     if (!worker) {
-      await saveSession(dir, { schemaVersion, key, updatedAt: Date.now(), messages: [] }, this.options.config.session.maxMessages);
+      await saveSession(dir, blankEnvelope(key, now), this.options.config.session.maxMessages);
       return "done";
     }
     worker.queue.length = 0;
     if (this.isBusy(key)) { worker.pendingReset = true; return "pending"; }
     worker.controller?.reset();
-    await saveSession(dir, { schemaVersion, key, updatedAt: Date.now(), messages: [] }, this.options.config.session.maxMessages);
+    this.resetSessionState(worker, now);
+    await saveSession(dir, blankEnvelope(key, now), this.options.config.session.maxMessages);
     return "done";
   }
 
@@ -256,5 +323,78 @@ export class SessionManager {
     const worker = this.workers.get(key);
     return !!worker && (worker.busy || worker.processing || !!worker.activePrompt || this.controllerRunning(worker));
   }
+
+  async getStatus(inbound: InboundMessage): Promise<StatusSnapshot> {
+    const now = Date.now();
+    const worker = this.workers.get(inbound.sessionKey);
+    let config = this.options.config;
+    let messageCount = 0;
+    let sessionCreatedAt = now;
+    let updatedAt = 0;
+    let usage = blankUsage();
+    let queueLength = 0;
+    let pendingReset = false;
+    let busy = false;
+    let processing = false;
+    let processingStartedAt: number | undefined;
+
+    if (worker) {
+      if (worker.conv) config = worker.conv.config;
+      busy = this.isBusy(inbound.sessionKey);
+      processing = worker.current || !!worker.activePrompt || this.controllerRunning(worker);
+      processingStartedAt = worker.processingStartedAt;
+      queueLength = worker.queue.length;
+      pendingReset = worker.pendingReset;
+      sessionCreatedAt = worker.sessionCreatedAt;
+      updatedAt = worker.updatedAt;
+      usage = worker.usage;
+      messageCount = worker.controller?.messages().length ?? 0;
+      if (!worker.controller && worker.conv) {
+        const envelope = await loadSession(worker.conv.dir, inbound.sessionKey, config.session.inactivityTtlHours * 3600_000, now);
+        messageCount = envelope.messages.length;
+        sessionCreatedAt = envelope.createdAt ?? envelope.updatedAt;
+        updatedAt = envelope.updatedAt;
+        usage = envelope.usage ?? blankUsage();
+      }
+    } else {
+      try {
+        const conv = await this.options.store.get(inbound.target);
+        config = conv.config;
+        const envelope = await loadSession(conv.dir, inbound.sessionKey, config.session.inactivityTtlHours * 3600_000, now);
+        messageCount = envelope.messages.length;
+        sessionCreatedAt = envelope.createdAt ?? envelope.updatedAt;
+        updatedAt = envelope.updatedAt;
+        usage = envelope.usage ?? blankUsage();
+      } catch {
+        // keep defaults
+      }
+    }
+
+    const processingDuration = processing && processingStartedAt
+      ? formatDuration(now - processingStartedAt)
+      : "空闲";
+
+    return {
+      chatType: chatTypeLabel(inbound.target),
+      sessionMode: sessionModeLabel(inbound.target),
+      sessionKey: inbound.sessionKey,
+      busy,
+      processing,
+      busyText: busy ? (processing ? "处理中" : "忙碌") : "空闲",
+      processingDuration,
+      sessionDuration: formatDuration(now - sessionCreatedAt),
+      queueLength,
+      queueMax: config.queue.maxLength,
+      messageCount,
+      pendingReset: pendingReset ? "是" : "否",
+      model: `${config.llm.provider}/${config.llm.model}`,
+      replyMode: config.reply.mode,
+      sessionTokens: formatTokens(usage.input, usage.output, usage.total),
+      lastTokens: formatTokens(usage.lastInput, usage.lastOutput, usage.lastTotal),
+      lastActive: updatedAt ? formatDuration(now - updatedAt) : "—",
+      uptime: formatDuration(now - processStartedAt),
+    };
+  }
+
   async close(): Promise<void> { for (const worker of this.workers.values()) await worker.controller?.close(); }
 }
