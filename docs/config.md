@@ -98,9 +98,56 @@ snowluma-agent doctor --llm
 
 - `mode` 可选 `at` 或 `all`，默认 `at`。
 - `session` 可选 `shared` 或 `per-user`，默认 `shared`。
-- `commandAllowlist` 可选；仅对共享群聊会话生效。
+- `commandAllowlist` 可选；仅对共享群聊会话生效。若配置了白名单，需显式包含 `help`、`status` 等指令名才能在共享群聊中使用。
 
-群聊普通消息发送给 LLM 前会自动添加 `[发送者QQ号: <user_id>] ` 前缀，便于共享群聊会话区分不同发送者。消息开头的机器人 @ 会被移除；私聊消息和 `/new`、`/stop` 等系统命令不添加该前缀。
+群聊普通消息发送给 LLM 前会自动添加 `[发送者QQ号: <user_id>] ` 前缀，便于共享群聊会话区分不同发送者。消息开头的机器人 @ 会被移除；私聊消息和 `/new`、`/stop`、`/help`、`/status` 等系统命令不添加该前缀。
+
+## 系统指令与 /status 模板
+
+系统层指令（不进入 LLM、不占消息队列）：
+
+| 指令 | 说明 |
+|------|------|
+| `/new` | 开启新会话（清空当前记忆） |
+| `/stop` | 停止当前回答并清空等待队列 |
+| `/help` | 显示全部可用指令与功能说明 |
+| `/status` | 按模板显示当前会话状态 |
+
+相关 `reply` 配置：
+
+```json
+"reply": {
+  "helpText": null,
+  "helpExtra": null,
+  "statusTemplate": "【会话状态】\n类型：{chatType}\n会话模式：{sessionMode}\n状态：{busyText}\n当前消息处理：{processingDuration}\n会话时长：{sessionDuration}\n队列：{queueLength}/{queueMax}\n历史消息：{messageCount}\n待重置：{pendingReset}\n模型：{model}\n回复模式：{replyMode}\n会话 Token：{sessionTokens}\n上次 Token：{lastTokens}\n上次活跃：{lastActive}\n进程运行：{uptime}",
+  "unknownCommandNotice": "未知指令，可用：/new /stop /help /status"
+}
+```
+
+- `helpText`：非空时整段覆盖自动生成的 `/help` 内容。
+- `helpExtra`：追加在自动生成列表之后。
+- `statusTemplate`：`/status` 输出模板，支持以下占位符：
+
+| 占位符 | 含义 |
+|--------|------|
+| `{chatType}` | 私聊 / 群聊 |
+| `{sessionMode}` | 共享会话 / 每人单独会话（私聊为 —） |
+| `{sessionKey}` | 内部会话键 |
+| `{busy}` / `{processing}` | 是 / 否 |
+| `{busyText}` | 空闲 / 处理中 / 忙碌 |
+| `{processingDuration}` | 当前消息已处理时长，空闲时为「空闲」 |
+| `{sessionDuration}` | 自上次 `/new` 或首次建会话起的时长 |
+| `{queueLength}` / `{queueMax}` | 当前队列长度 / 上限 |
+| `{messageCount}` | 历史消息条数 |
+| `{pendingReset}` | 是否有待生效的 `/new` |
+| `{model}` | `provider/model` |
+| `{replyMode}` | realtime / batch |
+| `{sessionTokens}` | 会话累计 token：`input/output/total` |
+| `{lastTokens}` | 上次回复 token：`input/output/total` |
+| `{lastActive}` | 距上次活跃的时长 |
+| `{uptime}` | 进程运行时长 |
+
+会话文件会额外保存 `createdAt` 与 `usage`（可选字段，旧文件兼容）。
 
 ## 工具配置（tools.json）
 

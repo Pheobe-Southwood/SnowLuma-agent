@@ -6,7 +6,7 @@ import type { SnowLumaWebSocketClient } from "@snowluma/sdk";
 import type { AgentController } from "../src/agent.js";
 import { defaultConfig } from "../src/config.js";
 import { ConversationStore } from "../src/conversations.js";
-import { SessionManager } from "../src/sessions.js";
+import { loadSession, SessionManager } from "../src/sessions.js";
 import type { InboundMessage, OneBotMessageEvent } from "../src/types.js";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -190,5 +190,73 @@ describe("SessionManager /stop", () => {
     promptRelease.resolve();
     await waitUntil(() => !manager.isBusy("private:10001"));
     expect(calls).toEqual(["long MCP task"]);
+  });
+});
+
+describe("SessionManager /status", () => {
+  it("reports idle status and accumulates usage after a prompt", async () => {
+    const { config, qq, store } = await testContext();
+    const messages: Array<Record<string, unknown>> = [];
+    const controller = fakeController({
+      calls: [],
+      abortCalls: { count: 0 },
+      messages,
+      promptStarted: () => {
+        messages.push({ role: "user", content: "hi" });
+        messages.push({ role: "assistant", usage: { input: 11, output: 4, totalTokens: 15 } });
+      },
+    });
+    const manager = new SessionManager({ config, store, qq, createController: async () => controller });
+    const msg = inbound("hello");
+    const idle = await manager.getStatus(msg);
+    expect(idle.busy).toBe(false);
+    expect(idle.chatType).toBe("私聊");
+    expect(idle.sessionMode).toBe("—");
+    expect(idle.processingDuration).toBe("空闲");
+    expect(idle.sessionTokens).toBe("0/0/0");
+
+    await manager.submit(msg);
+    await waitUntil(() => !manager.isBusy(msg.sessionKey));
+    const after = await manager.getStatus(msg);
+    expect(after.messageCount).toBe(2);
+    expect(after.sessionTokens).toBe("11/4/15");
+    expect(after.lastTokens).toBe("11/4/15");
+    expect(after.model).toContain(config.llm.provider);
+
+    const envelope = await loadSession(join(config.conversationsDir, "10001"), msg.sessionKey, 3600_000);
+    expect(envelope.createdAt).toBeTypeOf("number");
+    expect(envelope.usage?.total).toBe(15);
+  });
+
+  it("shows processing duration while busy and resets createdAt on /new", async () => {
+    const { config, qq, store } = await testContext();
+    const promptStarted = deferred();
+    const promptRelease = deferred();
+    const controller = fakeController({
+      calls: [],
+      abortCalls: { count: 0 },
+      promptStarted: promptStarted.resolve,
+      promptRelease: promptRelease.promise,
+    });
+    const manager = new SessionManager({ config, store, qq, createController: async () => controller });
+    const msg = inbound("busy");
+    await manager.submit(msg);
+    await promptStarted.promise;
+    const busy = await manager.getStatus(msg);
+    expect(busy.busy).toBe(true);
+    expect(busy.processing).toBe(true);
+    expect(busy.busyText).toBe("处理中");
+    expect(busy.processingDuration).not.toBe("空闲");
+
+    promptRelease.resolve();
+    await waitUntil(() => !manager.isBusy(msg.sessionKey));
+    const beforeNew = await manager.getStatus(msg);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await manager.newSession(msg.sessionKey)).toBe("done");
+    const afterNew = await manager.getStatus(msg);
+    expect(afterNew.sessionTokens).toBe("0/0/0");
+    expect(afterNew.messageCount).toBe(0);
+    expect(afterNew.sessionDuration === "不到1秒" || afterNew.sessionDuration.endsWith("秒")).toBe(true);
+    expect(beforeNew.sessionKey).toBe(afterNew.sessionKey);
   });
 });

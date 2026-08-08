@@ -65,8 +65,27 @@ export function defaultConfig(dir: string): Config {
       stopNotice: "已停止",
       stopIdleNotice: "当前没有正在运行的对话",
       newSessionNotice: "已开启新会话",
-      unknownCommandNotice: "未知指令，可用：/new /stop",
+      unknownCommandNotice: "未知指令，可用：/new /stop /help /status",
       commandNotAllowedNotice: "当前群聊未启用该指令",
+      helpText: null,
+      helpExtra: null,
+      statusTemplate: [
+        "【会话状态】",
+        "类型：{chatType}",
+        "会话模式：{sessionMode}",
+        "状态：{busyText}",
+        "当前消息处理：{processingDuration}",
+        "会话时长：{sessionDuration}",
+        "队列：{queueLength}/{queueMax}",
+        "历史消息：{messageCount}",
+        "待重置：{pendingReset}",
+        "模型：{model}",
+        "回复模式：{replyMode}",
+        "会话 Token：{sessionTokens}",
+        "上次 Token：{lastTokens}",
+        "上次活跃：{lastActive}",
+        "进程运行：{uptime}",
+      ].join("\n"),
       failedSendDir: join(dir, "data/failed-sends"),
     },
     commandPrefix: "/",
@@ -238,6 +257,7 @@ export function validateConfig(config: Config): string[] {
   if (mode && mode !== "at" && mode !== "all") errors.push("groupDefaults.mode 必须是 at 或 all");
   const session = config.groupDefaults.session ?? config.group?.session;
   if (session && session !== "shared" && session !== "per-user") errors.push("groupDefaults.session 必须是 shared 或 per-user");
+  if (typeof config.reply.statusTemplate !== "string" || !config.reply.statusTemplate.trim()) errors.push("reply.statusTemplate 不能为空");
   return errors;
 }
 

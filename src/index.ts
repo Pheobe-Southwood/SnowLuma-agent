@@ -13,3 +13,4 @@ export * from "./commands.js";
 export * from "./media.js";
 export * from "./reply.js";
 export * from "./sessions.js";
+export * from "./status.js";
