@@ -30,10 +30,10 @@ export interface Config {
   };
   whitelist: {
     private: number[];
-    groups: Record<string, GroupConfig>;
-    defaultGroupMode: "at" | "all";
-    defaultGroupSession: "shared" | "per-user";
+    groups: number[];
   };
+  groupDefaults: GroupConfig;
+  group?: GroupConfig;
   session: { inactivityTtlHours: number; maxMessages: number };
   conversationsDir: string;
   media: {

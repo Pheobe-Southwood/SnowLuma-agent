@@ -67,7 +67,7 @@ npm install -g github:Pheobe-Southwood/SnowLuma-agent --prefix /root/.npm-global
 systemctl restart snowluma-agent.service
 ```
 
-更新不会覆盖 `/root/.snowluma-agent/config.json`、`.env`、会话和媒体数据。
+更新不会覆盖 `/root/.snowluma-agent/config.json`、`tools.json`、`whitelist/`、`.env`、会话和媒体数据。
 
 ## 修改配置
 
@@ -75,6 +75,9 @@ systemctl restart snowluma-agent.service
 
 ```bash
 vi /root/.snowluma-agent/config.json
+vi /root/.snowluma-agent/tools.json
+vi /root/.snowluma-agent/whitelist/private.txt
+vi /root/.snowluma-agent/whitelist/groups.txt
 systemctl restart snowluma-agent.service
 ```
 

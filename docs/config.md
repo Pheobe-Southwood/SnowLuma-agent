@@ -2,6 +2,17 @@
 
 配置目录默认为 `~/.snowluma-agent`，也可以通过 `SNOWLUMA_AGENT_DIR` 指定。`snowluma-agent init` 会生成基础配置文件。
 
+全局配置拆分为三个部分：
+
+| 文件 | 内容 |
+|------|------|
+| `config.json` | SnowLuma、LLM、会话、媒体、回复、队列、**群聊默认策略** |
+| `tools.json` | `skills`、`mcp`、`blockedToolNames` |
+| `whitelist/private.txt` | 私聊 QQ 号，每行一个 |
+| `whitelist/groups.txt` | 群号，每行一个 |
+
+不做旧版单文件配置的自动迁移；升级后请手动拆分。
+
 ## SnowLuma 配置
 
 ```json
@@ -58,30 +69,57 @@ snowluma-agent doctor --llm
 
 ## 白名单
 
+编辑纯文本文件即可，每行一个号码；空行和 `#` 注释会被忽略：
+
+```text
+# ~/.snowluma-agent/whitelist/private.txt
+10001
+10002
+```
+
+```text
+# ~/.snowluma-agent/whitelist/groups.txt
+123456
+789012
+```
+
+- `private.txt`：允许使用机器人的 QQ 号。
+- `groups.txt`：允许使用机器人的群号。
+- 未列入白名单的消息会被忽略，不会调用 LLM。
+
+群聊默认策略写在主配置的 `groupDefaults` 中；每个群会话首次创建时会复制到该会话 `config.json` 的 `group` 字段，之后可按会话单独修改：
+
 ```json
-"whitelist": {
-  "private": [10001, 10002],
-  "groups": {
-    "123456": {
-      "mode": "at",
-      "session": "shared",
-      "commandAllowlist": ["new", "stop"]
-    }
-  },
-  "defaultGroupMode": "at",
-  "defaultGroupSession": "shared"
+"groupDefaults": {
+  "mode": "at",
+  "session": "shared"
 }
 ```
 
-- `private` 是允许使用机器人的 QQ 号列表。
-- `groups` 是允许使用机器人的群号配置。
-- `mode` 可选 `at` 或 `all`，默认是 `at`。
-- `session` 可选 `shared` 或 `per-user`。
-- `commandAllowlist` 仅对共享群聊会话生效。
-
-未列入白名单的消息会被忽略，不会调用 LLM。
+- `mode` 可选 `at` 或 `all`，默认 `at`。
+- `session` 可选 `shared` 或 `per-user`，默认 `shared`。
+- `commandAllowlist` 可选；仅对共享群聊会话生效。
 
 群聊普通消息发送给 LLM 前会自动添加 `[发送者QQ号: <user_id>] ` 前缀，便于共享群聊会话区分不同发送者。消息开头的机器人 @ 会被移除；私聊消息和 `/new`、`/stop` 等系统命令不添加该前缀。
+
+## 工具配置（tools.json）
+
+```json
+{
+  "skills": {
+    "dir": "/root/.snowluma-agent/skills",
+    "enabled": []
+  },
+  "mcp": {
+    "servers": []
+  },
+  "blockedToolNames": ["bash", "terminal", "shell", "edit", "write", "read", "execute", "exec", "filesystem", "run"]
+}
+```
+
+- `skills.enabled` 为空数组表示使用全部 Skills。
+- `mcp.servers` 默认为空（不启用 MCP）。
+- `blockedToolNames` 为危险工具名黑名单。
 
 ## 路径与会话
 
@@ -91,7 +129,7 @@ snowluma-agent doctor --llm
 - `promptsDir`：全局默认系统提示词 `SYSTEM_DEFAULT.md` 所在目录；每个会话的 `prompt.md` 首次使用时从它复制。
 - `media.downloadsDir`：媒体文件。
 - `reply.failedSendDir`：发送失败记录。
-- `skills.dir`：全局 Skills 库目录。
+- `skills.dir`（在 `tools.json`）：全局 Skills 库目录。
 
 路径应指向 Agent 用户有权限访问的目录，不要指向包含其他用户敏感数据的目录。
 
@@ -99,7 +137,7 @@ snowluma-agent doctor --llm
 
 首次收到某个私聊或群聊消息时，Agent 会在 `conversationsDir` 下自动创建该会话的文件夹，并生成 `config.json` 和 `.env`，内容取自全局配置中与该会话相关的部分：
 
-- 会话 `config.json` 包含 `llm`、`session`、`mcp`、`skills`、`reply.mode`、`blockedToolNames`；群聊还会包含该群在 `whitelist.groups` 中的条目（`mode` / `session` / `commandAllowlist`），不包含私聊相关配置。
+- 会话 `config.json` 包含 `llm`、`session`、`mcp`、`skills`、`reply.mode`、`blockedToolNames`；群聊还会包含 `group`（`mode` / `session` / `commandAllowlist`），不包含私聊相关配置。
 - 会话 `.env` 只包含全局 `.env` 中 `llm.apiKeyEnv` 指向的密钥；修改会话 `config.json` 的 `llm.apiKeyEnv` 后，缺失的密钥会在下次使用时自动补入。
 
 会话配置会叠加在全局配置之上（未写的字段回落到全局配置）。例如让群 123456 单独使用 DeepSeek、只开放部分 Skills：
@@ -119,8 +157,12 @@ snowluma-agent doctor --llm
   },
   "mcp": {
     "servers": []
+  },
+  "group": {
+    "mode": "all",
+    "session": "per-user"
   }
 }
 ```
 
-`skills.enabled` 为空数组表示使用全部 Skills；填入名称后该会话只能使用列出的 Skills。会话配置在进程启动后读取并缓存，修改后需要重启 Agent 生效。白名单始终以全局 `config.json` 为准，删除会话文件夹即可清空该会话的所有数据和配置。
+`skills.enabled` 为空数组表示使用全部 Skills；填入名称后该会话只能使用列出的 Skills。会话配置在进程启动后读取并缓存，修改后需要重启 Agent 生效。白名单始终以全局 `whitelist/*.txt` 为准，删除会话文件夹即可清空该会话的所有数据和配置。

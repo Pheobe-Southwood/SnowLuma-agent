@@ -1,3 +1,4 @@
+import { groupPolicy } from "./config.js";
 import type { Config, InboundMessage } from "./types.js";
 
 export type CommandName = "new" | "stop";
@@ -18,6 +19,6 @@ export function unescapeCommandText(text: string, prefix = "/"): string {
 
 export function commandAllowed(command: ParsedCommand, inbound: InboundMessage, config: Config): boolean {
   if (inbound.target.kind !== "group" || inbound.target.userId !== undefined) return true;
-  const group = config.whitelist.groups[String(inbound.target.groupId)];
-  return !group?.commandAllowlist || group.commandAllowlist.includes(command.name);
+  const allowlist = groupPolicy(config).commandAllowlist;
+  return !allowlist || allowlist.includes(command.name);
 }

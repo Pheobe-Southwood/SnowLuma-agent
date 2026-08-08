@@ -18,7 +18,7 @@
 ## 密钥与 token
 
 - SnowLuma token 和 LLM API key 都是敏感信息，不要提交到 GitHub、日志或工单。
-- `config.json` 和 `.env` 建议设置为 `600`，配置目录建议设置为 `700`。
+- `config.json`、`tools.json`、`whitelist/*.txt` 和 `.env` 建议设置为 `600`，配置目录建议设置为 `700`。
 - 备份配置文件时，备份同样包含敏感信息，也必须限制权限。
 - 更换 token 后应立即重启 Agent，并撤销旧 token。
 - `SNOWLUMA_ACCESS_TOKEN` 可用于临时注入 token，适合诊断或一次性运行。

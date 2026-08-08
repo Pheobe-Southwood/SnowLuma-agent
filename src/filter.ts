@@ -1,4 +1,5 @@
 import { normalizeMessage, parseSegments } from "@snowluma/sdk";
+import { groupPolicy } from "./config.js";
 import type { AnyMessageSegment, Config, InboundMessage, OneBotMessageEvent, SessionTarget } from "./types.js";
 
 export function messageSegments(event: OneBotMessageEvent): AnyMessageSegment[] {
@@ -21,19 +22,27 @@ export function isAtSelf(event: OneBotMessageEvent, segments = messageSegments(e
   return segments.some((segment) => segment.type === "at" && String(segment.data.qq) === String(event.self_id));
 }
 
-export function isWhitelisted(event: OneBotMessageEvent, config: Config): boolean {
+export function isAdmitted(event: OneBotMessageEvent, config: Config): boolean {
   if (event.message_type === "private") return config.whitelist.private.includes(event.user_id);
-  const group = config.whitelist.groups[String(event.group_id)];
-  if (!group) return false;
-  const mode = group.mode ?? config.whitelist.defaultGroupMode;
+  return config.whitelist.groups.includes(event.group_id!);
+}
+
+export function isWhitelisted(event: OneBotMessageEvent, config: Config): boolean {
+  if (!isAdmitted(event, config)) return false;
+  if (event.message_type === "private") return true;
+  const mode = groupPolicy(config).mode ?? "at";
   return mode === "all" || isAtSelf(event);
 }
 
 export function sessionTarget(event: OneBotMessageEvent, config: Config): SessionTarget {
   if (event.message_type === "private") return { kind: "private", userId: event.user_id };
-  const group = config.whitelist.groups[String(event.group_id)];
-  const mode = group?.session ?? config.whitelist.defaultGroupSession;
-  return mode === "per-user" ? { kind: "group", groupId: event.group_id!, userId: event.user_id } : { kind: "group", groupId: event.group_id! };
+  const session = groupPolicy(config).session ?? "shared";
+  return session === "per-user" ? { kind: "group", groupId: event.group_id!, userId: event.user_id } : { kind: "group", groupId: event.group_id! };
+}
+
+export function conversationTarget(event: OneBotMessageEvent): SessionTarget {
+  if (event.message_type === "private") return { kind: "private", userId: event.user_id };
+  return { kind: "group", groupId: event.group_id! };
 }
 
 export function sessionKey(target: SessionTarget): string {

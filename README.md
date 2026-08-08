@@ -66,7 +66,7 @@ cp ~/.snowluma-agent/.env.example ~/.snowluma-agent/.env
 chmod 600 ~/.snowluma-agent/.env
 ```
 
-编辑 `~/.snowluma-agent/config.json`，至少配置 SnowLuma 地址、访问 token、QQ 白名单和 LLM：
+编辑 `~/.snowluma-agent/config.json`，至少配置 SnowLuma 地址、访问 token 和 LLM；工具与白名单见独立文件：
 
 ```json
 {
@@ -81,19 +81,26 @@ chmod 600 ~/.snowluma-agent/.env
     "baseUrl": null,
     "apiKeyEnv": "DEEPSEEK_API_KEY"
   },
-  "whitelist": {
-    "private": [10001],
-    "groups": {
-      "123456": {
-        "mode": "at",
-        "session": "shared"
-      }
-    },
-    "defaultGroupMode": "at",
-    "defaultGroupSession": "shared"
+  "groupDefaults": {
+    "mode": "at",
+    "session": "shared"
   }
 }
 ```
+
+白名单（每行一个号码）：
+
+```text
+# ~/.snowluma-agent/whitelist/private.txt
+10001
+```
+
+```text
+# ~/.snowluma-agent/whitelist/groups.txt
+123456
+```
+
+工具相关配置在 `~/.snowluma-agent/tools.json`（`skills` / `mcp` / `blockedToolNames`）。
 
 API key 放在 `.env` 中，不要写入 Git：
 
@@ -106,8 +113,9 @@ SnowLuma token 通常位于容器内的 OneBot 配置文件 `snowluma-data/confi
 配置完成后，建议先检查文件权限：
 
 ```bash
-chmod 700 ~/.snowluma-agent
-chmod 600 ~/.snowluma-agent/config.json ~/.snowluma-agent/.env
+chmod 700 ~/.snowluma-agent ~/.snowluma-agent/whitelist
+chmod 600 ~/.snowluma-agent/config.json ~/.snowluma-agent/tools.json \
+  ~/.snowluma-agent/whitelist/*.txt ~/.snowluma-agent/.env
 ```
 
 也可以通过 `SNOWLUMA_ACCESS_TOKEN` 临时覆盖配置文件中的 token。完整配置说明见 [`docs/config.md`](docs/config.md)。
@@ -184,8 +192,10 @@ SnowLuma 容器应使用 Docker 的 `restart: unless-stopped`。Agent 可以使�
 
 ## 白名单与群聊模式
 
-- `whitelist.private`：允许使用机器人的 QQ 号列表。
-- `whitelist.groups`：允许使用机器人的群号及群聊策略。
+- `whitelist/private.txt`：允许使用机器人的 QQ 号（每行一个）。
+- `whitelist/groups.txt`：允许使用机器人的群号（每行一个）。
+- `groupDefaults`（主 `config.json`）：新建群会话时的默认 `mode` / `session` / `commandAllowlist`。
+- 每个群会话的 `conversations/<群号>/config.json` 中的 `group` 字段可覆盖该群策略。
 - `mode: "at"`：只有 @ 机器人时处理。
 - `mode: "all"`：群内所有消息都处理。
 - `session: "shared"`：群共享一个会话。
@@ -207,7 +217,11 @@ SnowLuma 容器应使用 Docker 的 `restart: unless-stopped`。Agent 可以使�
 
 ```text
 ~/.snowluma-agent/
-├── config.json          # 全局默认配置
+├── config.json          # 全局主配置（含 groupDefaults）
+├── tools.json           # skills / mcp / blockedToolNames
+├── whitelist/
+│   ├── private.txt      # 私聊 QQ 白名单
+│   └── groups.txt       # 群号白名单
 ├── .env                 # 全局密钥
 ├── prompts/
 │   └── SYSTEM_DEFAULT.md
@@ -219,18 +233,18 @@ SnowLuma 容器应使用 Docker 的 `restart: unless-stopped`。Agent 可以使�
     │   ├── prompt.md    # 该会话的系统提示词
     │   └── session_*.json
     └── 123456/          # 群聊：群号
-        ├── config.json
+        ├── config.json  # 含该群 group 策略
         ├── .env
         ├── prompt.md
         └── session_*.json
 ```
 
-会话的 `config.json` 和 `.env` 默认从全局 `config.json` / `.env` 取所需内容自动生成：
+会话的 `config.json` 和 `.env` 默认从全局配置 / `.env` 取所需内容自动生成：
 
-- 群聊会话只包含该群相关配置（`llm`、`mcp`、`skills`、该群的 `whitelist.groups` 条目等），不包含私聊相关配置；私聊会话不包含群聊配置。
+- 群聊会话只包含该群相关配置（`llm`、`mcp`、`skills`、`group` 策略等），不包含私聊相关配置；私聊会话不包含群聊配置。
 - 会话 `.env` 只包含全局 `.env` 中 `llm.apiKeyEnv` 指向的密钥，其他密钥不会自动复制。
-- 修改某个会话的 `config.json`（如 `llm.model`、`mcp.servers`、`skills.enabled`）即可让该会话使用不同的模型、MCP 工具和 Skills；删除该文件可重新从全局配置生成。
-- 会话配置在 Agent 进程启动后读取并缓存，修改后需要重启生效；白名单本身始终以全局 `config.json` 为准。
+- 修改某个会话的 `config.json`（如 `llm.model`、`mcp.servers`、`skills.enabled`、`group`）即可让该会话使用不同的模型、MCP 工具、Skills 和群策略；删除该文件可重新从全局配置生成。
+- 会话配置在 Agent 进程启动后读取并缓存，修改后需要重启生效；白名单本身始终以全局 `whitelist/*.txt` 为准。
 
 ## 安全说明
 
