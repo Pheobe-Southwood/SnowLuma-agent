@@ -117,11 +117,16 @@ export function parseIdList(text: string): number[] {
   return ids;
 }
 
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return !!error && typeof error === "object" && "code" in error;
+}
+
 async function readOptionalText(path: string): Promise<string> {
   try {
     return await readFile(path, "utf8");
-  } catch {
-    return "";
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return "";
+    throw error;
   }
 }
 
@@ -136,11 +141,51 @@ async function loadWhitelist(dir: string): Promise<Config["whitelist"]> {
   };
 }
 
+function parseStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!isObject(value)) return undefined;
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "string") result[key] = entry;
+  }
+  return result;
+}
+
+function parseMcpServer(value: unknown): McpServerConfig | undefined {
+  if (!isObject(value)) return undefined;
+  if (typeof value.id !== "string" || !value.id) return undefined;
+  if (value.transport !== "stdio" && value.transport !== "http") return undefined;
+  const server: McpServerConfig = { id: value.id, transport: value.transport };
+  if (typeof value.command === "string") server.command = value.command;
+  if (Array.isArray(value.args)) server.args = value.args.filter((item): item is string => typeof item === "string");
+  if (typeof value.url === "string") server.url = value.url;
+  const headers = parseStringRecord(value.headers);
+  if (headers) server.headers = headers;
+  if (Array.isArray(value.allow)) server.allow = value.allow.filter((item): item is string => typeof item === "string");
+  return server;
+}
+
+function parseMcpServers(value: unknown): McpServerConfig[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const server = parseMcpServer(item);
+    return server ? [server] : [];
+  });
+}
+
 async function loadTools(dir: string): Promise<Pick<Config, "skills" | "mcp" | "blockedToolNames">> {
   const defaults = defaultTools(dir);
   const file = toolsPath(dir);
   if (!existsSync(file)) return defaults;
-  const raw = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+  let raw: Record<string, unknown>;
+  try {
+    const text = await readFile(file, "utf8");
+    const parsed: unknown = JSON.parse(text);
+    if (!isObject(parsed)) throw new Error("根节点必须是对象");
+    raw = parsed;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`tools.json 解析失败（${file}）：${reason}`);
+  }
   const skillsRaw = isObject(raw.skills) ? raw.skills : {};
   const mcpRaw = isObject(raw.mcp) ? raw.mcp : {};
   return {
@@ -149,7 +194,7 @@ async function loadTools(dir: string): Promise<Pick<Config, "skills" | "mcp" | "
       enabled: Array.isArray(skillsRaw.enabled) ? skillsRaw.enabled.filter((item): item is string => typeof item === "string") : defaults.skills.enabled,
     },
     mcp: {
-      servers: Array.isArray(mcpRaw.servers) ? (mcpRaw.servers as McpServerConfig[]) : defaults.mcp.servers,
+      servers: Array.isArray(mcpRaw.servers) ? parseMcpServers(mcpRaw.servers) : defaults.mcp.servers,
     },
     blockedToolNames: Array.isArray(raw.blockedToolNames)
       ? raw.blockedToolNames.filter((item): item is string => typeof item === "string")

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, initWorkspace, loadConfig, mergeConfig, parseIdList } from "../src/config.js";
@@ -72,6 +72,46 @@ describe("initWorkspace and loadConfig", () => {
     expect(config.skills.enabled).toEqual(["demo"]);
     expect(config.blockedToolNames).toEqual(["bash"]);
     expect(config.groupDefaults.mode).toBe("at");
+  });
+
+  it("rejects invalid tools.json JSON with a clear error", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snowluma-bad-tools-"));
+    await initWorkspace(dir);
+    await writeFile(join(dir, "tools.json"), "{ not-json\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/tools\.json 解析失败/);
+  });
+
+  it("filters malformed mcp.servers entries and keeps valid ones", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snowluma-mcp-"));
+    await initWorkspace(dir);
+    await writeFile(join(dir, "tools.json"), `${JSON.stringify({
+      skills: { dir: join(dir, "skills"), enabled: [] },
+      mcp: {
+        servers: [
+          { id: "ok", transport: "stdio", command: "uvx", args: ["demo"] },
+          { id: "", transport: "stdio", command: "bad" },
+          { transport: "http", url: "https://example.com" },
+          { id: "bad-transport", transport: "udp" },
+          "skip-me",
+          { id: "http-ok", transport: "http", url: "https://example.com", headers: { a: "1", n: 2 }, allow: ["t", 1] },
+        ],
+      },
+      blockedToolNames: [],
+    }, null, 2)}\n`);
+    const config = await loadConfig(dir);
+    expect(config.mcp.servers).toEqual([
+      { id: "ok", transport: "stdio", command: "uvx", args: ["demo"] },
+      { id: "http-ok", transport: "http", url: "https://example.com", headers: { a: "1" }, allow: ["t"] },
+    ]);
+  });
+
+  it("propagates non-ENOENT whitelist read errors", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snowluma-wl-err-"));
+    await initWorkspace(dir);
+    const privatePath = join(dir, "whitelist", "private.txt");
+    await rm(privatePath);
+    await mkdir(privatePath);
+    await expect(loadConfig(dir)).rejects.toMatchObject({ code: "EISDIR" });
   });
 });
 
