@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import dotenv from "dotenv";
-import { envPath, mergeConfig, validateConfig } from "./config.js";
+import { envPath, groupPolicy, mergeConfig, validateConfig } from "./config.js";
 import { ensureConversationPrompt } from "./system_prompt.js";
 import type { Config, SessionTarget } from "./types.js";
 
@@ -38,16 +38,11 @@ function conversationDefaults(config: Config, target: SessionTarget): Record<str
     blockedToolNames: config.blockedToolNames,
   };
   if (target.kind === "group") {
-    const id = String(target.groupId);
-    const group = config.whitelist.groups[id] ?? {};
-    out.whitelist = {
-      groups: {
-        [id]: {
-          mode: group.mode ?? config.whitelist.defaultGroupMode,
-          session: group.session ?? config.whitelist.defaultGroupSession,
-          ...(group.commandAllowlist ? { commandAllowlist: group.commandAllowlist } : {}),
-        },
-      },
+    const policy = groupPolicy(config);
+    out.group = {
+      mode: policy.mode ?? "at",
+      session: policy.session ?? "shared",
+      ...(policy.commandAllowlist ? { commandAllowlist: policy.commandAllowlist } : {}),
     };
   }
   return out;

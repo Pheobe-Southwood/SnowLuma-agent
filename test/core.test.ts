@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultConfig, mergeConfig } from "../src/config.js";
-import { buildInbound, isWhitelisted, messageSegments, promptForLlm, promptTextFromEvent, sessionKey, textFromSegments } from "../src/filter.js";
+import { defaultConfig, initWorkspace, loadConfig, mergeConfig, parseIdList } from "../src/config.js";
+import { buildInbound, isAdmitted, isWhitelisted, messageSegments, promptForLlm, promptTextFromEvent, sessionKey, textFromSegments } from "../src/filter.js";
 import { parseCommand, unescapeCommandText } from "../src/commands.js";
 import { assistantText } from "../src/reply.js";
 import { listSkills, useSkill } from "../src/skills.js";
@@ -26,20 +26,52 @@ function event(overrides: Partial<OneBotMessageEvent> = {}): OneBotMessageEvent 
 }
 
 describe("mergeConfig", () => {
-  it("adds nested whitelist group ids while ignoring unknown top-level keys", () => {
+  it("merges known fields and group policy while ignoring unknown top-level keys", () => {
     const merged = mergeConfig(defaultConfig("/tmp/snowluma-test"), {
       skillsDir: "/legacy/skills",
       whitelist: {
         private: [10001],
-        groups: { "1101061750": { mode: "at", session: "shared" } },
+        groups: [1101061750],
       },
+      groupDefaults: { mode: "all", session: "per-user" },
+      group: { session: "shared" },
       llm: { model: "merged-model" },
     });
     expect(merged.whitelist.private).toEqual([10001]);
-    expect(merged.whitelist.groups["1101061750"]).toEqual({ mode: "at", session: "shared" });
+    expect(merged.whitelist.groups).toEqual([1101061750]);
+    expect(merged.groupDefaults).toEqual({ mode: "all", session: "per-user" });
+    expect(merged.group?.session).toBe("shared");
     expect(merged.llm.model).toBe("merged-model");
     expect(merged.llm.provider).toBe("anthropic");
     expect((merged as unknown as { skillsDir?: string }).skillsDir).toBeUndefined();
+  });
+});
+
+describe("parseIdList", () => {
+  it("parses one id per line and ignores comments/blank/invalid lines", () => {
+    expect(parseIdList("# comment\n\n10001\n 123456 \nbad\n0\n10001\n")).toEqual([10001, 123456]);
+  });
+});
+
+describe("initWorkspace and loadConfig", () => {
+  it("creates split config files and loads tools/whitelist from them", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snowluma-init-"));
+    await initWorkspace(dir);
+    expect(JSON.parse(await readFile(join(dir, "config.json"), "utf8")).skills).toBeUndefined();
+    expect(JSON.parse(await readFile(join(dir, "tools.json"), "utf8")).mcp).toEqual({ servers: [] });
+    await writeFile(join(dir, "whitelist", "private.txt"), "10001\n");
+    await writeFile(join(dir, "whitelist", "groups.txt"), "# g\n123456\n");
+    await writeFile(join(dir, "tools.json"), `${JSON.stringify({
+      skills: { dir: join(dir, "skills"), enabled: ["demo"] },
+      mcp: { servers: [] },
+      blockedToolNames: ["bash"],
+    }, null, 2)}\n`);
+    const config = await loadConfig(dir);
+    expect(config.whitelist.private).toEqual([10001]);
+    expect(config.whitelist.groups).toEqual([123456]);
+    expect(config.skills.enabled).toEqual(["demo"]);
+    expect(config.blockedToolNames).toEqual(["bash"]);
+    expect(config.groupDefaults.mode).toBe("at");
   });
 });
 
@@ -47,9 +79,12 @@ describe("filter and commands", () => {
   it("enforces private/group whitelist and @ mode", () => {
     const config = defaultConfig("/tmp/snowluma-test");
     config.whitelist.private = [10001];
-    config.whitelist.groups["123"] = { mode: "at" };
+    config.whitelist.groups = [123];
+    config.groupDefaults = { mode: "at", session: "shared" };
+    expect(isAdmitted(event(), config)).toBe(true);
     expect(isWhitelisted(event(), config)).toBe(true);
     const group = event({ message_type: "group", group_id: 123, message: [{ type: "text", data: { text: "hello" } }] });
+    expect(isAdmitted(group, config)).toBe(true);
     expect(isWhitelisted(group, config)).toBe(false);
     group.message = [{ type: "at", data: { qq: "999" } }, { type: "text", data: { text: "hello" } }];
     expect(isWhitelisted(group, config)).toBe(true);

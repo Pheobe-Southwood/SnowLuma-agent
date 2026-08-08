@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { appDir, initWorkspace, loadConfig, llmConfigurationStatus } from "./config.js";
 import { checkQq, createQqClient } from "./qq.js";
 import { listSkills } from "./skills.js";
-import { buildInbound, isWhitelisted, promptForLlm, promptTextFromEvent, messageSegments, sessionTarget } from "./filter.js";
+import { buildInbound, conversationTarget, isAdmitted, isWhitelisted, promptForLlm, promptTextFromEvent, messageSegments } from "./filter.js";
 import { commandAllowed, parseCommand, unescapeCommandText } from "./commands.js";
 import { processMedia } from "./media.js";
 import { noticeText, sendText } from "./reply.js";
@@ -27,7 +27,7 @@ async function commandInit(args: string[]): Promise<void> {
   const dir = argDir(args);
   await initWorkspace(dir, args.includes("--systemd"));
   console.log(`已初始化 ${dir}`);
-  console.log(`请编辑 ${dir}/config.json；SnowLuma accessToken 和白名单需由你自行配置。`);
+  console.log(`请编辑 ${dir}/config.json、${dir}/tools.json，并在 ${dir}/whitelist/ 中配置 QQ/群号白名单。`);
 }
 
 async function commandDoctor(args: string[]): Promise<void> {
@@ -84,10 +84,10 @@ async function commandStart(args: string[]): Promise<void> {
     createController: (target, sessionKey, messages, systemPrompt, conv) => createAgentController({ conv, target, sessionKey, messages, systemPrompt, qq }),
   });
   const handle = async (event: OneBotMessageEvent): Promise<void> => {
-    if (!isWhitelisted(event, config)) return;
+    if (!isAdmitted(event, config)) return;
     let conv;
     try {
-      conv = await store.get(sessionTarget(event, config));
+      conv = await store.get(conversationTarget(event));
     } catch (error) {
       console.error(`[conversation] 会话初始化失败：`, error);
       return;

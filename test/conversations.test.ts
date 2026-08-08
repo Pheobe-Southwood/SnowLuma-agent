@@ -39,7 +39,7 @@ describe("conversation identity", () => {
 describe("ConversationStore", () => {
   it("creates per-conversation folders with curated config, .env and prompt", async () => {
     const { config, dir } = await testContext();
-    config.whitelist.groups["123456"] = { mode: "at", session: "per-user", commandAllowlist: ["new"] };
+    config.groupDefaults = { mode: "at", session: "per-user", commandAllowlist: ["new"] };
     const store = new ConversationStore({ config, dir });
     const group = await store.get(groupTarget());
     const convDir = group.dir;
@@ -52,13 +52,12 @@ describe("ConversationStore", () => {
     expect(raw.llm).toEqual(config.llm);
     expect(raw.mcp).toEqual({ servers: [] });
     expect(raw.skills).toEqual({ dir: config.skills.dir, enabled: [] });
-    expect((raw.whitelist as Record<string, unknown>).groups).toEqual({
-      "123456": { mode: "at", session: "per-user", commandAllowlist: ["new"] },
-    });
-    expect("private" in (raw.whitelist as Record<string, unknown>)).toBe(false);
+    expect(raw.group).toEqual({ mode: "at", session: "per-user", commandAllowlist: ["new"] });
+    expect("whitelist" in raw).toBe(false);
 
     const privateConv = await store.get(privateTarget());
     const privateRaw = JSON.parse(await readFile(join(privateConv.dir, "config.json"), "utf8")) as Record<string, unknown>;
+    expect("group" in privateRaw).toBe(false);
     expect("whitelist" in privateRaw).toBe(false);
     expect(privateConv.id).toBe("10001");
   });
@@ -138,14 +137,15 @@ describe("ConversationStore", () => {
 
   it("lets each conversation override the group mode and session policy", async () => {
     const { config, dir } = await testContext();
-    config.whitelist.groups["123456"] = { mode: "at", session: "shared" };
+    config.groupDefaults = { mode: "at", session: "shared" };
     const store = new ConversationStore({ config, dir });
     const conv = await store.get(groupTarget());
-    expect(conv.config.whitelist.groups["123456"]?.session).toBe("shared");
-    await writeFile(join(conv.dir, "config.json"), `${JSON.stringify({ whitelist: { groups: { "123456": { session: "per-user" } } } }, null, 2)}\n`);
+    expect(conv.config.group?.session).toBe("shared");
+    expect(conv.config.group?.mode).toBe("at");
+    await writeFile(join(conv.dir, "config.json"), `${JSON.stringify({ group: { session: "per-user" } }, null, 2)}\n`);
     const updated = await new ConversationStore({ config, dir }).get(groupTarget());
-    expect(updated.config.whitelist.groups["123456"]?.session).toBe("per-user");
-    expect(updated.config.whitelist.groups["123456"]?.mode).toBe("at");
+    expect(updated.config.group?.session).toBe("per-user");
+    expect(updated.config.group?.mode ?? updated.config.groupDefaults.mode).toBe("at");
   });
 });
 
