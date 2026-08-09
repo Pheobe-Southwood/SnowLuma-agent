@@ -46,10 +46,6 @@ function conversationConfigDefaults(config: Config, target: SessionTarget): Reco
   return out;
 }
 
-function conversationToolsDefaults(config: Config): Record<string, unknown> {
-  return snapshotTools(config);
-}
-
 async function writeSecure(path: string, content: string): Promise<void> {
   const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(temp, content, { mode: 0o600 });
@@ -67,7 +63,7 @@ async function writeConversationDefaults(convDir: string, config: Config, target
   await writeSecure(conversationConfigPath(convDir), `${JSON.stringify(raw, null, 2)}\n`);
   const toolsFile = conversationToolsPath(convDir);
   if (!existsSync(toolsFile)) {
-    await writeSecure(toolsFile, `${JSON.stringify(conversationToolsDefaults(config), null, 2)}\n`);
+    await writeSecure(toolsFile, `${JSON.stringify(snapshotTools(config), null, 2)}\n`);
   }
   return raw;
 }
