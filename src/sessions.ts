@@ -235,7 +235,7 @@ export class SessionManager {
           if (worker.stopRequested) break;
           const beforeCount = controller.messages().length;
           worker.processingStartedAt = Date.now();
-          worker.activePrompt = controller.prompt(inbound.promptText);
+          worker.activePrompt = controller.prompt(inbound.promptText, { usageBaseline: worker.usage });
           await worker.activePrompt;
           if (!worker.stopRequested) {
             const messages = controller.messages() as unknown as SessionMessage[];

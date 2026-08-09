@@ -7,10 +7,12 @@ import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { envApiKeyAuth } from "@earendil-works/pi-ai";
-import type { Config, ReplyTarget, SessionMessage } from "./types.js";
+import type { Config, ReplyTarget, SessionMessage, SessionUsage } from "./types.js";
 import { llmApiKey } from "./config.js";
 import type { ConversationContext } from "./conversations.js";
+import { createWorkingHeartbeat, type WorkingHeartbeat } from "./heartbeat.js";
 import { assistantText, sendText } from "./reply.js";
+import { accumulateUsage, blankUsage } from "./status.js";
 import { safetyGate, buildTools } from "./tools.js";
 import { connectMcp, type McpRuntime } from "./mcp.js";
 import { listSkills, skillsPrompt } from "./skills.js";
@@ -56,10 +58,14 @@ function makeModels(config: Config) {
   return models;
 }
 
+export interface PromptOptions {
+  usageBaseline?: SessionUsage;
+}
+
 export interface AgentController {
   readonly agent: Agent;
   readonly mcp: McpRuntime;
-  prompt(text: string): Promise<void>;
+  prompt(text: string, options?: PromptOptions): Promise<void>;
   abort(): void;
   isRunning(): boolean;
   waitForIdle(): Promise<void>;
@@ -104,6 +110,7 @@ export async function createAgentController(options: {
   const systemPrompt = `${options.systemPrompt}\n\n${skillsPrompt(skills)}`;
   let aborted = false;
   const batchTexts: string[] = [];
+  let heartbeat: WorkingHeartbeat | undefined;
   const agent = new Agent({
     initialState: {
       systemPrompt,
@@ -123,21 +130,57 @@ export async function createAgentController(options: {
     const text = assistantText(event.message);
     if (!text || aborted) return;
     if (config.reply.mode === "batch") batchTexts.push(text);
-    else await sendText(options.qq, options.target, text, config);
+    else {
+      await sendText(options.qq, options.target, text, config);
+      heartbeat?.onUserVisible();
+    }
   });
   return {
     agent,
     mcp,
-    prompt: async (text) => {
+    prompt: async (text, promptOptions) => {
       aborted = false;
       batchTexts.length = 0;
-      await agent.prompt(text);
-      if (!aborted && config.reply.mode === "batch") for (const item of batchTexts.splice(0)) await sendText(options.qq, options.target, item, config);
+      const beforeCount = agent.state.messages.length;
+      const usageBaseline = promptOptions?.usageBaseline ?? blankUsage();
+      const startedAt = Date.now();
+      heartbeat?.stop();
+      heartbeat = createWorkingHeartbeat({
+        enabled: config.reply.heartbeatEnabled,
+        intervalMs: config.reply.heartbeatIntervalMs,
+        template: config.reply.heartbeatTemplate,
+        getUsage: () => accumulateUsage(usageBaseline, agent.state.messages as unknown as SessionMessage[], beforeCount),
+        getElapsedMs: () => Date.now() - startedAt,
+        isActive: () => !aborted,
+        send: (message) => sendText(options.qq, options.target, message, config),
+      });
+      try {
+        await agent.prompt(text);
+        if (!aborted && config.reply.mode === "batch") {
+          for (const item of batchTexts.splice(0)) {
+            await sendText(options.qq, options.target, item, config);
+            heartbeat?.onUserVisible();
+          }
+        }
+      } finally {
+        heartbeat?.stop();
+        heartbeat = undefined;
+      }
     },
-    abort: () => { aborted = true; agent.abort(); },
+    abort: () => {
+      aborted = true;
+      heartbeat?.stop();
+      agent.abort();
+    },
     isRunning: () => agent.state.isStreaming,
     waitForIdle: () => agent.waitForIdle(),
-    reset: () => { aborted = false; batchTexts.length = 0; agent.reset(); },
+    reset: () => {
+      aborted = false;
+      batchTexts.length = 0;
+      heartbeat?.stop();
+      heartbeat = undefined;
+      agent.reset();
+    },
     setSystemPrompt: (prompt) => { agent.state.systemPrompt = `${prompt}\n\n${skillsPrompt(skills)}`; },
     messages: () => agent.state.messages as AgentMessage[],
     close: () => mcp.close(),
