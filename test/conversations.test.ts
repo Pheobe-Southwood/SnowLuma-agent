@@ -37,29 +37,76 @@ describe("conversation identity", () => {
 });
 
 describe("ConversationStore", () => {
-  it("creates per-conversation folders with curated config, .env and prompt", async () => {
+  it("creates per-conversation folders with curated config, tools, .env and prompt", async () => {
     const { config, dir } = await testContext();
     config.groupDefaults = { mode: "at", session: "per-user", commandAllowlist: ["new"] };
+    config.skills.enabled = ["demo"];
+    config.blockedToolNames = ["bash"];
     const store = new ConversationStore({ config, dir });
     const group = await store.get(groupTarget());
     const convDir = group.dir;
     expect(existsSync(join(convDir, "config.json"))).toBe(true);
+    expect(existsSync(join(convDir, "tools.json"))).toBe(true);
     expect(existsSync(join(convDir, ".env"))).toBe(true);
     expect(existsSync(join(convDir, "prompt.md"))).toBe(true);
     expect(await readFile(join(convDir, "prompt.md"), "utf8")).toBe("system prompt\n");
 
     const raw = JSON.parse(await readFile(join(convDir, "config.json"), "utf8")) as Record<string, unknown>;
     expect(raw.llm).toEqual(config.llm);
-    expect(raw.mcp).toEqual({ servers: [] });
-    expect(raw.skills).toEqual({ dir: config.skills.dir, enabled: [] });
+    expect("mcp" in raw).toBe(false);
+    expect("skills" in raw).toBe(false);
+    expect("blockedToolNames" in raw).toBe(false);
     expect(raw.group).toEqual({ mode: "at", session: "per-user", commandAllowlist: ["new"] });
     expect("whitelist" in raw).toBe(false);
+
+    const tools = JSON.parse(await readFile(join(convDir, "tools.json"), "utf8")) as Record<string, unknown>;
+    expect(tools).toEqual({
+      skills: { dir: config.skills.dir, enabled: ["demo"] },
+      mcp: { servers: [] },
+      blockedToolNames: ["bash"],
+    });
+    expect(group.config.skills.enabled).toEqual(["demo"]);
+    expect(group.config.blockedToolNames).toEqual(["bash"]);
 
     const privateConv = await store.get(privateTarget());
     const privateRaw = JSON.parse(await readFile(join(privateConv.dir, "config.json"), "utf8")) as Record<string, unknown>;
     expect("group" in privateRaw).toBe(false);
     expect("whitelist" in privateRaw).toBe(false);
     expect(privateConv.id).toBe("10001");
+  });
+
+  it("ignores legacy tools fields in config.json when tools.json is missing", async () => {
+    const { config, dir } = await testContext();
+    config.skills.enabled = ["global-only"];
+    config.blockedToolNames = ["bash"];
+    const convDir = join(config.conversationsDir, "10001");
+    await mkdir(convDir, { recursive: true });
+    await writeFile(join(convDir, "config.json"), `${JSON.stringify({
+      llm: config.llm,
+      skills: { dir: config.skills.dir, enabled: ["legacy"] },
+      mcp: { servers: [{ id: "legacy", transport: "stdio", command: "echo" }] },
+      blockedToolNames: ["shell"],
+    }, null, 2)}\n`);
+    const conv = await new ConversationStore({ config, dir }).get(privateTarget());
+    expect(existsSync(join(convDir, "tools.json"))).toBe(false);
+    expect(conv.config.skills.enabled).toEqual(["global-only"]);
+    expect(conv.config.mcp.servers).toEqual([]);
+    expect(conv.config.blockedToolNames).toEqual(["bash"]);
+  });
+
+  it("loads tools from conversation tools.json over the global tools", async () => {
+    const { config, dir } = await testContext();
+    config.skills.enabled = ["global"];
+    const store = new ConversationStore({ config, dir });
+    const conv = await store.get(privateTarget());
+    await writeFile(join(conv.dir, "tools.json"), `${JSON.stringify({
+      skills: { dir: config.skills.dir, enabled: ["session"] },
+      mcp: { servers: [] },
+      blockedToolNames: ["bash"],
+    }, null, 2)}\n`);
+    const updated = await new ConversationStore({ config, dir }).get(privateTarget());
+    expect(updated.config.skills.enabled).toEqual(["session"]);
+    expect(updated.config.blockedToolNames).toEqual(["bash"]);
   });
 
   it("copies only the llm apiKeyEnv key into the conversation .env", async () => {
@@ -112,13 +159,16 @@ describe("ConversationStore", () => {
 
   it("recovers from a corrupt conversation config.json", async () => {
     const { config, dir } = await testContext();
+    config.skills.enabled = ["demo"];
     const store = new ConversationStore({ config, dir });
     const conv = await store.get(privateTarget());
     await writeFile(join(conv.dir, "config.json"), "{not-json\n");
     const recovered = await new ConversationStore({ config, dir }).get(privateTarget());
     expect(recovered.config.llm.model).toBe(config.llm.model);
     expect(existsSync(join(conv.dir, "config.json"))).toBe(true);
+    expect(existsSync(join(conv.dir, "tools.json"))).toBe(true);
     expect(JSON.parse(await readFile(join(conv.dir, "config.json"), "utf8")).llm).toEqual(config.llm);
+    expect(JSON.parse(await readFile(join(conv.dir, "tools.json"), "utf8")).skills.enabled).toEqual(["demo"]);
     expect((await readdir(conv.dir)).some((name) => name.startsWith("config.json.corrupt."))).toBe(true);
   });
 
