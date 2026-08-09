@@ -230,21 +230,24 @@ SnowLuma 容器应使用 Docker 的 `restart: unless-stopped`。Agent 可以使�
 └── conversations/
     ├── 10001/           # 私聊：QQ 号
     │   ├── config.json  # 该会话的配置（自动从全局生成，可编辑）
+    │   ├── tools.json   # 该会话的 tools（新建时复制全局 tools.json）
     │   ├── .env         # 该会话的密钥（自动从全局生成，可编辑）
     │   ├── prompt.md    # 该会话的系统提示词
     │   └── session_*.json
     └── 123456/          # 群聊：群号
         ├── config.json  # 含该群 group 策略
+        ├── tools.json
         ├── .env
         ├── prompt.md
         └── session_*.json
 ```
 
-会话的 `config.json` 和 `.env` 默认从全局配置 / `.env` 取所需内容自动生成：
+会话的 `config.json`、`tools.json` 和 `.env` 默认从全局配置 / `.env` 取所需内容自动生成：
 
-- 群聊会话只包含该群相关配置（`llm`、`mcp`、`skills`、`group` 策略等），不包含私聊相关配置；私聊会话不包含群聊配置。
+- 群聊会话 `config.json` 只包含该群相关配置（`llm`、`session`、`reply.mode`、`group` 策略等），不包含私聊相关配置；私聊会话不包含群聊配置。
+- 会话 `tools.json` 在新建时完整复制全局 `tools.json`（`skills` / `mcp` / `blockedToolNames`）；不做旧版内联 tools 的自动迁移。
 - 会话 `.env` 只包含全局 `.env` 中 `llm.apiKeyEnv` 指向的密钥，其他密钥不会自动复制。
-- 修改某个会话的 `config.json`（如 `llm.model`、`mcp.servers`、`skills.enabled`、`group`）即可让该会话使用不同的模型、MCP 工具、Skills 和群策略；删除该文件可重新从全局配置生成。
+- 修改某个会话的 `config.json`（如 `llm.model`、`group`）或 `tools.json`（如 `mcp.servers`、`skills.enabled`）即可让该会话使用不同的模型、MCP 工具、Skills 和群策略；删除对应文件可重新从全局配置生成（仅新建路径会写回默认文件）。
 - 会话配置在 Agent 进程启动后读取并缓存，修改后需要重启生效；白名单本身始终以全局 `whitelist/*.txt` 为准。
 
 ## 安全说明

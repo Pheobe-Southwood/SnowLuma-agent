@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import dotenv from "dotenv";
-import { envPath, groupPolicy, mergeConfig, validateConfig } from "./config.js";
+import { envPath, groupPolicy, loadToolsFile, mergeConfig, snapshotTools, validateConfig } from "./config.js";
 import { ensureConversationPrompt } from "./system_prompt.js";
 import type { Config, SessionTarget } from "./types.js";
 
@@ -26,16 +26,14 @@ export function conversationIdFromSessionKey(sessionKey: string): string {
 export const conversationDir = (config: Config, target: SessionTarget): string => join(config.conversationsDir, conversationId(target));
 export const conversationDirFromKey = (config: Config, sessionKey: string): string => join(config.conversationsDir, conversationIdFromSessionKey(sessionKey));
 export const conversationConfigPath = (convDir: string): string => join(convDir, "config.json");
+export const conversationToolsPath = (convDir: string): string => join(convDir, "tools.json");
 export const conversationEnvPath = (convDir: string): string => join(convDir, ".env");
 
-function conversationDefaults(config: Config, target: SessionTarget): Record<string, unknown> {
+function conversationConfigDefaults(config: Config, target: SessionTarget): Record<string, unknown> {
   const out: Record<string, unknown> = {
     llm: { ...config.llm },
     session: { ...config.session },
-    mcp: { servers: config.mcp.servers },
-    skills: { dir: config.skills.dir, enabled: [] },
     reply: { mode: config.reply.mode },
-    blockedToolNames: config.blockedToolNames,
   };
   if (target.kind === "group") {
     const policy = groupPolicy(config);
@@ -46,6 +44,10 @@ function conversationDefaults(config: Config, target: SessionTarget): Record<str
     };
   }
   return out;
+}
+
+function conversationToolsDefaults(config: Config): Record<string, unknown> {
+  return snapshotTools(config);
 }
 
 async function writeSecure(path: string, content: string): Promise<void> {
@@ -60,22 +62,40 @@ async function globalEnvMap(appDir: string): Promise<Record<string, string>> {
   try { return dotenv.parse(await readFile(envPath(appDir), "utf8")); } catch { return {}; }
 }
 
+async function writeConversationDefaults(convDir: string, config: Config, target: SessionTarget): Promise<Record<string, unknown>> {
+  const raw = conversationConfigDefaults(config, target);
+  await writeSecure(conversationConfigPath(convDir), `${JSON.stringify(raw, null, 2)}\n`);
+  const toolsFile = conversationToolsPath(convDir);
+  if (!existsSync(toolsFile)) {
+    await writeSecure(toolsFile, `${JSON.stringify(conversationToolsDefaults(config), null, 2)}\n`);
+  }
+  return raw;
+}
+
 async function readConversationConfig(convDir: string, config: Config, target: SessionTarget): Promise<Record<string, unknown>> {
   const path = conversationConfigPath(convDir);
-  const defaults = () => conversationDefaults(config, target);
-  if (!existsSync(path)) {
-    const raw = defaults();
-    await writeSecure(path, `${JSON.stringify(raw, null, 2)}\n`);
-    return raw;
-  }
+  if (!existsSync(path)) return writeConversationDefaults(convDir, config, target);
   try {
     return JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
   } catch {
     await rename(path, `${path}.corrupt.${Date.now()}`).catch(() => undefined);
-    const raw = defaults();
-    await writeSecure(path, `${JSON.stringify(raw, null, 2)}\n`);
-    return raw;
+    return writeConversationDefaults(convDir, config, target);
   }
+}
+
+async function applyConversationTools(merged: Config, convDir: string, global: Config): Promise<void> {
+  const defaults = snapshotTools(global);
+  const file = conversationToolsPath(convDir);
+  if (!existsSync(file)) {
+    merged.skills = defaults.skills;
+    merged.mcp = defaults.mcp;
+    merged.blockedToolNames = defaults.blockedToolNames;
+    return;
+  }
+  const tools = await loadToolsFile(file, defaults);
+  merged.skills = tools.skills;
+  merged.mcp = tools.mcp;
+  merged.blockedToolNames = tools.blockedToolNames;
 }
 
 function serializeEnv(env: Record<string, string>): string {
@@ -116,6 +136,7 @@ export class ConversationStore {
     await chmod(convDir, 0o700).catch(() => undefined);
     const raw = await readConversationConfig(convDir, config, target);
     const merged = mergeConfig(config, raw);
+    await applyConversationTools(merged, convDir, config);
     const errors = validateConfig(merged);
     if (errors.length) throw new Error(`会话 ${id} 配置无效：\n- ${errors.join("\n- ")}`);
     await ensureConversationEnv(convDir, merged, dir);

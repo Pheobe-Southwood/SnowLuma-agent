@@ -19,12 +19,22 @@ export function defaultGroupDefaults(): GroupConfig {
   return { mode: "at", session: "shared" };
 }
 
-export function defaultTools(dir: string): Pick<Config, "skills" | "mcp" | "blockedToolNames"> {
+export type ToolsConfig = Pick<Config, "skills" | "mcp" | "blockedToolNames">;
+
+export function defaultTools(dir: string): ToolsConfig {
   return {
     skills: { dir: join(dir, "skills"), enabled: [] },
     mcp: { servers: [] },
     blockedToolNames: ["bash", "terminal", "shell", "edit", "write", "read", "execute", "exec", "filesystem", "run"],
   };
+}
+
+export function snapshotTools(config: Pick<Config, "skills" | "mcp" | "blockedToolNames">): ToolsConfig {
+  return structuredClone({
+    skills: config.skills,
+    mcp: config.mcp,
+    blockedToolNames: config.blockedToolNames,
+  });
 }
 
 export function defaultConfig(dir: string): Config {
@@ -194,9 +204,7 @@ function parseMcpServers(value: unknown): McpServerConfig[] {
   });
 }
 
-async function loadTools(dir: string): Promise<Pick<Config, "skills" | "mcp" | "blockedToolNames">> {
-  const defaults = defaultTools(dir);
-  const file = toolsPath(dir);
+export async function loadToolsFile(file: string, defaults: ToolsConfig): Promise<ToolsConfig> {
   if (!existsSync(file)) return defaults;
   let raw: Record<string, unknown>;
   try {
@@ -222,6 +230,10 @@ async function loadTools(dir: string): Promise<Pick<Config, "skills" | "mcp" | "
       ? raw.blockedToolNames.filter((item): item is string => typeof item === "string")
       : defaults.blockedToolNames,
   };
+}
+
+async function loadTools(dir: string): Promise<ToolsConfig> {
+  return loadToolsFile(toolsPath(dir), defaultTools(dir));
 }
 
 function mainConfigDefaults(dir: string): Record<string, unknown> {
