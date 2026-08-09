@@ -14,7 +14,7 @@ export function formatHeartbeat(template: string, usage: HeartbeatUsage, elapsed
     sessionTokens: formatTokens(usage.input, usage.output, usage.total),
     elapsed: formatDuration(elapsedMs),
   };
-  return template.replace(/\{(\w+)\}/g, (match, key: string) => (key in map ? map[key] : match));
+  return template.replace(/\{(\w+)\}/g, (match, key: string) => (Object.hasOwn(map, key) ? map[key] : match));
 }
 
 export interface WorkingHeartbeat {
