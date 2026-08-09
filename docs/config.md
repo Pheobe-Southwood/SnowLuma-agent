@@ -120,12 +120,26 @@ snowluma-agent doctor --llm
   "helpText": null,
   "helpExtra": null,
   "statusTemplate": "【会话状态】\n类型：{chatType}\n会话模式：{sessionMode}\n状态：{busyText}\n当前消息处理：{processingDuration}\n会话时长：{sessionDuration}\n队列：{queueLength}/{queueMax}\n历史消息：{messageCount}\n待重置：{pendingReset}\n模型：{model}\n回复模式：{replyMode}\n会话 Token：{sessionTokens}\n上次 Token：{lastTokens}\n上次活跃：{lastActive}\n进程运行：{uptime}",
+  "heartbeatEnabled": true,
+  "heartbeatIntervalMs": 30000,
+  "heartbeatTemplate": "【工作中】目前已消耗{total}token",
   "unknownCommandNotice": "未知指令，可用：/new /stop /help /status"
 }
 ```
 
 - `helpText`：非空时整段覆盖自动生成的 `/help` 内容。
 - `helpExtra`：追加在自动生成列表之后。
+- `heartbeatEnabled`：是否在 Agent「闷声干活」（长时间无用户可见文本）时向 QQ 发送进度提示，默认 `true`。
+- `heartbeatIntervalMs`：静默满该毫秒数后发送一条心跳，之后若仍静默则每隔相同间隔再发；最小 `1000`，默认 `30000`。向 QQ 发出 assistant 文本（realtime 的中间回复或 batch 结束时的 flush）会重置计时；心跳本身不重置。
+- `heartbeatTemplate`：心跳文案模板，支持以下占位符：
+
+| 占位符 | 含义 |
+|--------|------|
+| `{total}` | 会话累计 total token（含历史与本轮已完成的 LLM 调用） |
+| `{input}` / `{output}` | 会话累计 input / output |
+| `{sessionTokens}` | `input/output/total`，与 `/status` 同格式 |
+| `{elapsed}` | 本轮消息已处理时长 |
+
 - `statusTemplate`：`/status` 输出模板，支持以下占位符：
 
 | 占位符 | 含义 |

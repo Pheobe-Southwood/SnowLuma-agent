@@ -58,6 +58,9 @@ export interface Config {
     helpText?: string | null;
     helpExtra?: string | null;
     statusTemplate: string;
+    heartbeatEnabled: boolean;
+    heartbeatIntervalMs: number;
+    heartbeatTemplate: string;
     failedSendDir: string;
   };
   commandPrefix: string;

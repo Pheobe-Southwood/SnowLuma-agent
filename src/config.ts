@@ -86,6 +86,9 @@ export function defaultConfig(dir: string): Config {
         "上次活跃：{lastActive}",
         "进程运行：{uptime}",
       ].join("\n"),
+      heartbeatEnabled: true,
+      heartbeatIntervalMs: 30_000,
+      heartbeatTemplate: "【工作中】目前已消耗{total}token",
       failedSendDir: join(dir, "data/failed-sends"),
     },
     commandPrefix: "/",
@@ -258,6 +261,9 @@ export function validateConfig(config: Config): string[] {
   const session = config.groupDefaults.session ?? config.group?.session;
   if (session && session !== "shared" && session !== "per-user") errors.push("groupDefaults.session 必须是 shared 或 per-user");
   if (typeof config.reply.statusTemplate !== "string" || !config.reply.statusTemplate.trim()) errors.push("reply.statusTemplate 不能为空");
+  if (typeof config.reply.heartbeatEnabled !== "boolean") errors.push("reply.heartbeatEnabled 必须是布尔值");
+  if (!Number.isInteger(config.reply.heartbeatIntervalMs) || config.reply.heartbeatIntervalMs < 1000) errors.push("reply.heartbeatIntervalMs 必须是不小于 1000 的整数");
+  if (typeof config.reply.heartbeatTemplate !== "string" || !config.reply.heartbeatTemplate.trim()) errors.push("reply.heartbeatTemplate 不能为空");
   return errors;
 }
 
