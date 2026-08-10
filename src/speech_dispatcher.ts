@@ -23,6 +23,7 @@ import type {
 } from "./types.js";
 
 export const SPEECH_DISPATCHER_TOOL = "dispatch_to_character";
+export const SPEECH_DISPATCHER_SELECT_TOOL = "dispatch_selected_to_character";
 
 export const DEFAULT_SPEECH_DISPATCHER_PROMPT = `你是“发言调度 Agent”，负责角色扮演对话中的发言时机。你不直接扮演角色，也不回答聊天参与者。
 
@@ -39,8 +40,9 @@ export const DEFAULT_SPEECH_DISPATCHER_PROMPT = `你是“发言调度 Agent”�
 - 普通文本输出仅用于内部记录，不能代替工具调用。需要角色发言时必须调用工具。
 
 工作方式：
-- 每轮会收到一批新的聊天消息。
+- 每轮会收到一批新的聊天消息，每条消息前都有本次调度会话内唯一且稳定的短编号。
 - “触发角色回复”会提交自上次成功派发后，截至工具调用瞬间的全部未派发消息。
+- 如果启用了“选择消息触发角色回复”，可传入已经展示过的消息编号，只提交选中的消息；未选消息保留且不会重新展示或重新编号。
 - 若不需要角色发言，结束本轮且不要调用工具。
 `;
 
@@ -92,6 +94,7 @@ interface Worker {
   closed: boolean;
   generation: number;
   resetAfterRound: boolean;
+  activePresentedSeq?: number;
   lock: Promise<void>;
   logLock: Promise<void>;
   timer?: NodeJS.Timeout;
@@ -191,7 +194,8 @@ function parseTools(value: unknown): SpeechDispatcherToolsConfig {
   if (!isObject(value)) throw new Error("发言调度 tools.json 根节点必须是对象");
   if (value.enabled === undefined) return defaultSpeechDispatcherTools();
   if (!Array.isArray(value.enabled) || !value.enabled.every((item) => typeof item === "string")) throw new Error("tools.enabled 必须是字符串数组");
-  const unknown = value.enabled.filter((name) => name !== SPEECH_DISPATCHER_TOOL);
+  const known = new Set([SPEECH_DISPATCHER_TOOL, SPEECH_DISPATCHER_SELECT_TOOL]);
+  const unknown = value.enabled.filter((name) => !known.has(name));
   if (unknown.length) throw new Error(`未知的发言调度工具：${unknown.join(", ")}`);
   return { enabled: [...new Set(value.enabled)] };
 }
@@ -395,6 +399,14 @@ function renderBatch(records: DispatchRecord[], template: string, suffix: string
   return [...records.map((record) => renderRecord(template, record)), suffix].join("\n");
 }
 
+function messageNumber(record: DispatchRecord): string {
+  return record.seq.toString(36);
+}
+
+function renderDispatcherBatch(records: DispatchRecord[], template: string, suffix: string): string {
+  return [...records.map((record) => `[编号：${messageNumber(record)}] ${renderRecord(template, record)}`), suffix].join("\n");
+}
+
 function textFromAgentMessage(message: AgentMessage): string {
   if (message.role !== "assistant" || !Array.isArray(message.content)) return "";
   return message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("").trim();
@@ -440,13 +452,25 @@ export class SpeechDispatcherManager {
     return `${dispatcherPrompt.trim()}\n\n---\n以下是供你参考的角色 Agent 人设。该内容仅用于判断发言时机，不要直接扮演角色或回答：\n\n<character_prompt>\n${characterPrompt.trim()}\n</character_prompt>`;
   }
 
-  private buildTool(worker: Worker): AgentTool {
+  private buildDispatchAllTool(worker: Worker): AgentTool {
     return {
       name: SPEECH_DISPATCHER_TOOL,
       label: "触发角色回复",
       description: "把自上次成功派发后、截至本次工具调用瞬间的全部未派发消息提交给角色 Agent。",
       parameters: Type.Object({}),
       execute: async () => this.dispatch(worker),
+    };
+  }
+
+  private buildDispatchSelectedTool(worker: Worker): AgentTool {
+    return {
+      name: SPEECH_DISPATCHER_SELECT_TOOL,
+      label: "选择消息触发角色回复",
+      description: "按短编号选择已经展示且仍未派发的消息，并按原始顺序提交给角色 Agent。未选消息会保留且不重新展示。",
+      parameters: Type.Object({
+        messageIds: Type.Array(Type.String(), { minItems: 1, description: "要派发的消息短编号，例如 1、a、10。" }),
+      }),
+      execute: async (_toolCallId, parameters) => this.dispatchSelected(worker, isObject(parameters) ? parameters.messageIds : undefined),
     };
   }
 
@@ -469,7 +493,9 @@ export class SpeechDispatcherManager {
       lock: Promise.resolve(),
       logLock: Promise.resolve(),
     };
-    const tools = ctx.tools.enabled.includes(SPEECH_DISPATCHER_TOOL) ? [this.buildTool(worker)] : [];
+    const tools: AgentTool[] = [];
+    if (ctx.tools.enabled.includes(SPEECH_DISPATCHER_TOOL)) tools.push(this.buildDispatchAllTool(worker));
+    if (ctx.tools.enabled.includes(SPEECH_DISPATCHER_SELECT_TOOL)) tools.push(this.buildDispatchSelectedTool(worker));
     worker.ready = (async () => {
       const generation = worker.generation;
       const controller = await this.createController({
@@ -521,13 +547,9 @@ export class SpeechDispatcherManager {
   private async resetMemory(worker: Worker, reason: string): Promise<void> {
     await this.withLock(worker, async () => {
       worker.controller?.reset();
-      worker.state.messages = [];
-      worker.state.usage = blankUsage();
-      worker.state.messagesSinceReset = 0;
-      worker.state.dispatchesSinceReset = 0;
-      worker.state.sessionCreatedAt = Date.now();
-      worker.state.lastPresentedSeq = worker.state.pending.length ? worker.state.pending[0]!.seq - 1 : worker.state.nextSeq - 1;
+      worker.state = initialState();
       worker.resetAfterRound = false;
+      worker.activePresentedSeq = undefined;
       await saveState(worker);
     });
     await appendTranscript(worker, "自动重置", reason);
@@ -552,15 +574,68 @@ export class SpeechDispatcherManager {
       await appendTranscript(worker, "派发失败", `角色 Agent 队列已满；保留 ${records.length} 条消息。`);
       return toolResult("角色 Agent 队列已满，消息已保留，请稍后重试。");
     }
-    if (generation !== worker.generation) return toolResult("会话已重置；角色队列已接收本批消息，但调度状态未继续更新。");
+    let applied = false;
     await this.withLock(worker, async () => {
+      if (generation !== worker.generation) return;
       worker.state.pending = worker.state.pending.filter((record) => record.seq > maxSeq);
       worker.state.dispatchesSinceReset += 1;
       await saveState(worker);
+      applied = true;
     });
+    if (!applied) return toolResult("会话已重置；角色队列已接收本批消息，但调度状态未继续更新。");
     await appendTranscript(worker, "触发角色回复", `${promptText}\n\n派发消息数：${records.length}`);
     if (this.shouldReset(worker)) worker.resetAfterRound = true;
     return toolResult(`已向角色 Agent 派发 ${records.length} 条消息。`);
+  }
+
+  private async dispatchSelected(worker: Worker, messageIds: unknown): Promise<ReturnType<typeof toolResult>> {
+    if (!Array.isArray(messageIds) || !messageIds.length || !messageIds.every((id) => typeof id === "string" && id.length > 0)) {
+      return toolResult("messageIds 必须是非空的消息编号数组，本次未派发任何消息。");
+    }
+    if (new Set(messageIds).size !== messageIds.length) return toolResult("消息编号不能重复，本次未派发任何消息。");
+
+    const generation = worker.generation;
+    let records: DispatchRecord[] = [];
+    let invalidIds: string[] = [];
+    await this.withLock(worker, async () => {
+      const presentedThrough = Math.max(worker.state.lastPresentedSeq, worker.activePresentedSeq ?? 0);
+      const pendingById = new Map(worker.state.pending.map((record) => [messageNumber(record), record]));
+      invalidIds = messageIds.filter((id) => {
+        const record = pendingById.get(id);
+        return !record || record.seq > presentedThrough;
+      });
+      if (!invalidIds.length) {
+        const selected = new Set(messageIds);
+        records = worker.state.pending.filter((record) => selected.has(messageNumber(record))).map((record) => ({ ...record }));
+      }
+    });
+    if (invalidIds.length) return toolResult(`以下消息编号无效、尚未展示或已派发：${invalidIds.join("、")}。本次未派发任何消息。`);
+    if (generation !== worker.generation) return toolResult("会话已重置，本次派发已取消。");
+
+    const selectedSeqs = new Set(records.map((record) => record.seq));
+    const promptText = renderBatch(records, worker.ctx.config.templates.dispatchMessage, worker.ctx.config.templates.dispatchSuffix);
+    const base = worker.lastInbound;
+    const result = await this.options.role.submit({
+      ...base,
+      segments: [{ type: "text", data: { text: promptText } }],
+      promptText,
+    });
+    if (result.position === -1) {
+      await appendTranscript(worker, "选择派发失败", `角色 Agent 队列已满；保留所选的 ${records.length} 条消息。`);
+      return toolResult("角色 Agent 队列已满，消息已保留，请稍后重试。");
+    }
+    let applied = false;
+    await this.withLock(worker, async () => {
+      if (generation !== worker.generation) return;
+      worker.state.pending = worker.state.pending.filter((record) => !selectedSeqs.has(record.seq));
+      worker.state.dispatchesSinceReset += 1;
+      await saveState(worker);
+      applied = true;
+    });
+    if (!applied) return toolResult("会话已重置；角色队列已接收本批消息，但调度状态未继续更新。");
+    await appendTranscript(worker, "选择消息触发角色回复", `${promptText}\n\n派发消息数：${records.length}；编号：${messageIds.join("、")}`);
+    if (this.shouldReset(worker)) worker.resetAfterRound = true;
+    return toolResult(`已向角色 Agent 派发 ${records.length} 条选中消息。`);
   }
 
   async submit(inbound: InboundMessage, conv: ConversationContext, text: string): Promise<void> {
@@ -608,11 +683,12 @@ export class SpeechDispatcherManager {
         });
         if (!records.length || generation !== worker.generation) break;
         const watermark = records.at(-1)!.seq;
-        const input = renderBatch(records, worker.ctx.config.templates.inputMessage, worker.ctx.config.templates.inputSuffix);
+        const input = renderDispatcherBatch(records, worker.ctx.config.templates.inputMessage, worker.ctx.config.templates.inputSuffix);
         await appendTranscript(worker, "调度输入", input);
         const beforeCount = controller.messages().length;
         try {
           worker.activeRound = true;
+          worker.activePresentedSeq = watermark;
           controller.setSystemPrompt(await this.systemPrompt(worker));
           await controller.prompt(input);
           if (generation !== worker.generation) continue;
@@ -635,6 +711,7 @@ export class SpeechDispatcherManager {
           break;
         } finally {
           worker.activeRound = false;
+          worker.activePresentedSeq = undefined;
         }
         if (generation === worker.generation && (worker.resetAfterRound || this.shouldReset(worker))) await this.resetMemory(worker, `达到 ${worker.ctx.config.reset.mode} 重置条件`);
       }
@@ -656,6 +733,7 @@ export class SpeechDispatcherManager {
       worker.controller?.reset();
       worker.state = initialState();
       worker.resetAfterRound = false;
+      worker.activePresentedSeq = undefined;
       await saveState(worker);
     });
     await appendTranscript(worker, "/new", "已清空调度 Pi 会话、输入队列和全部未派发消息。" );

@@ -223,7 +223,7 @@ SnowLuma 容器应使用 Docker 的 `restart: unless-stopped`。Agent 可以使�
 }
 ```
 
-启用后，私聊以及 `mode: "all"`、`session: "shared"` 的群聊普通消息会先交给发言调度 Agent。它可以等待更多消息，只在合适时通过内置的“触发角色回复”工具把自上次派发后的整段聊天记录交给角色 Agent。群聊 @ 消息始终直达角色 Agent 且不进入调度记录；`at` 和 `per-user` 群聊模式不启用调度。
+启用后，私聊以及 `mode: "all"`、`session: "shared"` 的群聊普通消息会先交给发言调度 Agent。每条调度输入会在配置模板前自动获得不可配置的 Base36 短编号。默认的 `dispatch_to_character` 工具会把调用瞬间的全部未派发消息交给角色 Agent；还可在调度 `tools.json` 中启用 `dispatch_selected_to_character`，通过 `messageIds` 选择已经展示的消息。编号只供调度使用，不会发送给角色 Agent。群聊 @ 消息始终直达角色 Agent 且不进入调度记录；`at` 和 `per-user` 群聊模式不启用调度。
 
 调度目录在首次需要时惰性生成：
 
@@ -234,7 +234,7 @@ conversations/<QQ号或群号>/speech-dispatcher/   # 会话配置、Pi 会话�
 
 可分别编辑其中的 `prompt.md`、`config.json` 和 `tools.json`。调度侧配置支持独立 LLM 覆盖、输入/派发模板、按派发次数/消息数/固定时间重置，以及日志轮转；未配置的 LLM 字段回退到角色 Agent。调度文本只写入 `session.json` 和 `transcript.md`，不会发送到 QQ。
 
-`/new` 同时重置角色与调度会话并清空未派发消息；`/stop` 只停止角色 Agent。固定时间只负责重置调度记忆，不会在无人发新消息时主动唤醒模型。完整字段见 [`docs/config.md`](docs/config.md)。
+`/new` 同时重置角色与调度会话；调度的显式或自动重置都会清空未派发消息、记忆和编号。`/stop` 只停止角色 Agent。固定时间重置不会在无人发新消息时主动唤醒模型。完整字段见 [`docs/config.md`](docs/config.md)。
 
 ## 会话目录与每会话配置
 

@@ -226,10 +226,10 @@ snowluma-agent doctor --llm
 ```
 
 - `llm` 可部分覆盖角色 Agent 的 `provider`、`model`、`thinkingLevel`、`baseUrl`、`apiKeyEnv`；其余字段回退角色配置。若使用不同的 `apiKeyEnv`，程序会从全局 `.env` 补入会话 `.env`。
-- `reset` 可设为 `{ "mode": "afterDispatches", "count": N }`、`{ "mode": "afterMessages", "count": N }` 或 `{ "mode": "interval", "intervalMinutes": N }`。达到阈值后等待当前轮结束再重置；自动重置保留未派发消息，`/new` 才会清空。
-- 四个模板都必须是非空字符串。message 模板支持 `{time}`、`{qq}`、`{message}`；多条消息以换行合并，suffix 只追加一次。
+- `reset` 可设为 `{ "mode": "afterDispatches", "count": N }`、`{ "mode": "afterMessages", "count": N }` 或 `{ "mode": "interval", "intervalMinutes": N }`。达到阈值后等待当前轮结束再重置；自动重置和 `/new` 都会清空未派发消息、调度记忆和消息编号。
+- 四个模板都必须是非空字符串。message 模板支持 `{time}`、`{qq}`、`{message}`；多条消息以换行合并，suffix 只追加一次。发给调度 Agent 时，程序会在每条 `inputMessage` 前自动注入不可配置的 Base36 短编号（如 `1`、`a`、`10`）；编号不会进入 `dispatchMessage`。
 - `transcript.md` 达到 `log.maxBytes` 后轮转，默认保留 `.1` 到 `.3` 三份备份。
-- v1 不限制未派发消息数量，也不会静默丢弃；长期不派发可能增大会话文件和最终角色输入。
+- 未派发消息没有独立数量上限；在下一次重置前长期不派发，可能增大会话文件和最终角色输入。
 
 调度 `tools.json` 默认只启用原生工具：
 
@@ -238,6 +238,11 @@ snowluma-agent doctor --llm
   "enabled": ["dispatch_to_character"]
 }
 ```
+
+- `dispatch_to_character`：把工具调用瞬间的全部未派发消息提交给角色 Agent，包括本轮推理期间新到的消息。
+- `dispatch_selected_to_character`：接收 `{ "messageIds": ["1", "a"] }`，只提交已经展示且仍未派发的指定消息。消息按原始顺序发送；未选消息保留，但不会重新展示或重新编号。空数组、重复编号、未知编号、已派发编号或尚未展示的编号会令整次调用失败且不派发任何消息。
+
+如需选择派发，可显式设置 `"enabled": ["dispatch_selected_to_character"]`，也可同时启用两个工具。默认仍只启用 `dispatch_to_character`。
 
 调度 Agent 不加载角色 Agent 的 Skills 或 MCP。修改调度 `config.json`/`tools.json` 后需要重启；角色和调度的 `prompt.md` 每轮重新读取，可直接更新。固定时间重置不是定时唤醒，无新消息时不会主动调用模型或发送 QQ 消息。
 
