@@ -194,11 +194,58 @@ snowluma-agent doctor --llm
 
 路径应指向 Agent 用户有权限访问的目录，不要指向包含其他用户敏感数据的目录。
 
+## 发言调度 Agent
+
+发言调度 Agent 默认关闭。可在全局 `config.json` 中为新会话设置默认值，也可在具体会话的 `config.json` 中覆盖：
+
+```json
+"speechDispatcher": {
+  "enabled": true
+}
+```
+
+它只适用于私聊和群聊 `mode: "all"`、`session: "shared"`。群聊 @ 消息始终直达角色 Agent，并且完全不写入调度会话；`at` 和 `per-user` 模式保持原有直达行为。机器人自己发送的消息会被忽略。
+
+第一次收到需要调度的消息时，程序会生成全局 `speech-dispatcher/`，并将 `prompt.md`、`config.json`、`tools.json` 复制到该会话的 `speech-dispatcher/`。已存在的文件不会覆盖。会话目录还包含持久化的 `session.json` 和供查看的 `transcript.md`。
+
+调度 `config.json` 默认值：
+
+```json
+{
+  "llm": {},
+  "session": { "maxMessages": 60 },
+  "reset": { "mode": "afterDispatches", "count": 1 },
+  "templates": {
+    "inputMessage": "[时间：{time}] [QQ：{qq}] {message}",
+    "inputSuffix": "请根据规则判断是否该让角色 Agent 发消息了？",
+    "dispatchMessage": "[QQ：{qq}] [时间：{time}] {message}",
+    "dispatchSuffix": "以上为新的聊天记录"
+  },
+  "log": { "maxBytes": 10485760, "backupCount": 3 }
+}
+```
+
+- `llm` 可部分覆盖角色 Agent 的 `provider`、`model`、`thinkingLevel`、`baseUrl`、`apiKeyEnv`；其余字段回退角色配置。若使用不同的 `apiKeyEnv`，程序会从全局 `.env` 补入会话 `.env`。
+- `reset` 可设为 `{ "mode": "afterDispatches", "count": N }`、`{ "mode": "afterMessages", "count": N }` 或 `{ "mode": "interval", "intervalMinutes": N }`。达到阈值后等待当前轮结束再重置；自动重置保留未派发消息，`/new` 才会清空。
+- 四个模板都必须是非空字符串。message 模板支持 `{time}`、`{qq}`、`{message}`；多条消息以换行合并，suffix 只追加一次。
+- `transcript.md` 达到 `log.maxBytes` 后轮转，默认保留 `.1` 到 `.3` 三份备份。
+- v1 不限制未派发消息数量，也不会静默丢弃；长期不派发可能增大会话文件和最终角色输入。
+
+调度 `tools.json` 默认只启用原生工具：
+
+```json
+{
+  "enabled": ["dispatch_to_character"]
+}
+```
+
+调度 Agent 不加载角色 Agent 的 Skills 或 MCP。修改调度 `config.json`/`tools.json` 后需要重启；角色和调度的 `prompt.md` 每轮重新读取，可直接更新。固定时间重置不是定时唤醒，无新消息时不会主动调用模型或发送 QQ 消息。
+
 ## 每会话配置
 
 首次收到某个私聊或群聊消息时，Agent 会在 `conversationsDir` 下自动创建该会话的文件夹，并生成 `config.json`、`tools.json` 和 `.env`，内容取自全局配置中与该会话相关的部分：
 
-- 会话 `config.json` 包含 `llm`、`session`、`reply.mode`；群聊还会包含 `group`（`mode` / `session` / `commandAllowlist`），不包含私聊相关配置。
+- 会话 `config.json` 包含 `llm`、`session`、`reply.mode`、`speechDispatcher`；群聊还会包含 `group`（`mode` / `session` / `commandAllowlist`），不包含私聊相关配置。
 - 会话 `tools.json` 在新建时**完整复制**全局 `tools.json`（`skills`、`mcp`、`blockedToolNames`）。
 - 会话 `.env` 只包含全局 `.env` 中 `llm.apiKeyEnv` 指向的密钥；修改会话 `config.json` 的 `llm.apiKeyEnv` 后，缺失的密钥会在下次使用时自动补入。
 - 不做旧版「tools 写在会话 `config.json`」的自动迁移：若会话目录没有 `tools.json`，则使用全局 tools；需要会话级覆盖时请手动创建/拆分 `tools.json`。

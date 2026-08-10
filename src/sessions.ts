@@ -127,7 +127,16 @@ function sessionModeLabel(target: SessionTarget): string {
 
 export class SessionManager {
   private readonly workers = new Map<string, Worker>();
+  private readonly idleWaiters = new Map<string, Set<() => void>>();
   constructor(private readonly options: SessionManagerOptions) {}
+
+  private notifyIdle(key: string): void {
+    if (this.isBusy(key)) return;
+    const waiters = this.idleWaiters.get(key);
+    if (!waiters) return;
+    this.idleWaiters.delete(key);
+    for (const resolve of waiters) resolve();
+  }
 
   private targetFor(inbound: InboundMessage): ReplyTarget {
     return inbound.target.kind === "private" ? { kind: "private", userId: inbound.target.userId } : { kind: "group", groupId: inbound.target.groupId };
@@ -158,6 +167,7 @@ export class SessionManager {
     worker.processing = false;
     worker.stopRequested = false;
     if (worker.queue.length) { worker.busy = true; void this.process(worker); }
+    else this.notifyIdle(worker.key);
   }
 
   private trackExternalRun(worker: Worker, controller: AgentController): void {
@@ -286,6 +296,7 @@ export class SessionManager {
       worker.processingStartedAt = undefined;
       worker.stopRequested = false;
       if (worker.queue.length) { worker.busy = true; void this.process(worker); }
+      else this.notifyIdle(worker.key);
     }
   }
 
@@ -322,6 +333,19 @@ export class SessionManager {
   isBusy(key: string): boolean {
     const worker = this.workers.get(key);
     return !!worker && (worker.busy || worker.processing || !!worker.activePrompt || this.controllerRunning(worker));
+  }
+
+  waitForIdle(key: string): Promise<void> {
+    if (!this.isBusy(key)) return Promise.resolve();
+    return new Promise((resolve) => {
+      let waiters = this.idleWaiters.get(key);
+      if (!waiters) {
+        waiters = new Set();
+        this.idleWaiters.set(key, waiters);
+      }
+      waiters.add(resolve);
+      if (!this.isBusy(key)) this.notifyIdle(key);
+    });
   }
 
   async getStatus(inbound: InboundMessage): Promise<StatusSnapshot> {
@@ -396,5 +420,9 @@ export class SessionManager {
     };
   }
 
-  async close(): Promise<void> { for (const worker of this.workers.values()) await worker.controller?.close(); }
+  async close(): Promise<void> {
+    for (const worker of this.workers.values()) await worker.controller?.close();
+    for (const waiters of this.idleWaiters.values()) for (const resolve of waiters) resolve();
+    this.idleWaiters.clear();
+  }
 }

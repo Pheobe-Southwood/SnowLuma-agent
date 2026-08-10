@@ -40,6 +40,7 @@ describe("ConversationStore", () => {
   it("creates per-conversation folders with curated config, tools, .env and prompt", async () => {
     const { config, dir } = await testContext();
     config.groupDefaults = { mode: "at", session: "per-user", commandAllowlist: ["new"] };
+    config.speechDispatcher.enabled = true;
     config.skills.enabled = ["demo"];
     config.blockedToolNames = ["bash"];
     const store = new ConversationStore({ config, dir });
@@ -57,6 +58,7 @@ describe("ConversationStore", () => {
     expect("skills" in raw).toBe(false);
     expect("blockedToolNames" in raw).toBe(false);
     expect(raw.group).toEqual({ mode: "at", session: "per-user", commandAllowlist: ["new"] });
+    expect(raw.speechDispatcher).toEqual({ enabled: true });
     expect("whitelist" in raw).toBe(false);
 
     const tools = JSON.parse(await readFile(join(convDir, "tools.json"), "utf8")) as Record<string, unknown>;

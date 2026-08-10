@@ -13,6 +13,7 @@ import { SessionManager } from "./sessions.js";
 import { formatStatus } from "./status.js";
 import { ConversationStore } from "./conversations.js";
 import { createAgentController, probeLlm } from "./agent.js";
+import { SpeechDispatcherManager, speechDispatcherEligible, speechDispatcherSupported } from "./speech_dispatcher.js";
 import type { InboundMessage, OneBotMessageEvent, ReplyTarget } from "./types.js";
 
 const VERSION = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")).version as string;
@@ -84,8 +85,10 @@ async function commandStart(args: string[]): Promise<void> {
     qq,
     createController: (target, sessionKey, messages, systemPrompt, conv) => createAgentController({ conv, target, sessionKey, messages, systemPrompt, qq }),
   });
+  const dispatcher = new SpeechDispatcherManager({ appDir: dir, role: manager });
   const handle = async (event: OneBotMessageEvent): Promise<void> => {
     if (!isAdmitted(event, config)) return;
+    if (event.user_id === event.self_id) return;
     let conv;
     try {
       conv = await store.get(conversationTarget(event));
@@ -105,7 +108,10 @@ async function commandStart(args: string[]): Promise<void> {
         const stopped = await manager.stop(inbound.sessionKey);
         await sendText(qq, targetOf(inbound), stopped ? conv.config.reply.stopNotice : conv.config.reply.stopIdleNotice, conv.config);
       } else if (command.name === "new") {
-        const status = await manager.newSession(inbound.sessionKey);
+        const resetDispatcher = speechDispatcherSupported(inbound, conv.config)
+          ? dispatcher.newSession(inbound, conv).catch((error) => console.error(`[speech-dispatcher ${inbound.sessionKey}] /new 重置失败`, error))
+          : Promise.resolve();
+        const [status] = await Promise.all([manager.newSession(inbound.sessionKey), resetDispatcher]);
         await sendText(qq, targetOf(inbound), conv.config.reply.newSessionNotice, conv.config);
         if (status === "pending") console.log(`[${inbound.sessionKey}] /new 将在当前回答结束后生效`);
       } else if (command.name === "help") {
@@ -120,15 +126,21 @@ async function commandStart(args: string[]): Promise<void> {
     }
     inbound.promptText = unescapeCommandText(plain, conv.config.commandPrefix);
     const media = await processMedia(inbound, conv.config, qq);
-    inbound.promptText = promptForLlm(event, media.text);
     if (media.failed) await sendText(qq, targetOf(inbound), conv.config.media.downloadFailedNotice, conv.config);
+    const useDispatcher = speechDispatcherEligible(inbound, conv.config);
+    if (useDispatcher) {
+      try { await dispatcher.submit(inbound, conv, media.text); }
+      catch (error) { console.error(`[speech-dispatcher ${inbound.sessionKey}] 提交失败`, error); }
+      return;
+    }
+    inbound.promptText = promptForLlm(event, media.text);
     const result = await manager.submit(inbound);
     if (result.position === -1) await sendText(qq, targetOf(inbound), conv.config.reply.queueFullNotice, conv.config);
     else if (result.queued && (!conv.config.queue.notifyFirstOnly || result.position === 2)) await sendText(qq, targetOf(inbound), noticeText(conv.config.reply.queueNotice, result.position), conv.config);
   };
   qq.onPrivateMessage(handle);
   qq.onGroupMessage(handle);
-  const close = async () => { await manager.close(); qq.close(); };
+  const close = async () => { await dispatcher.close(); await manager.close(); qq.close(); };
   process.once("SIGINT", () => void close().then(() => process.exit(0)));
   process.once("SIGTERM", () => void close().then(() => process.exit(0)));
   await new Promise<void>(() => undefined);

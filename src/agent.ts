@@ -186,3 +186,47 @@ export async function createAgentController(options: {
     close: () => mcp.close(),
   };
 }
+
+/** A Pi controller without QQ replies, skills, MCP, or heartbeat side effects. */
+export async function createSilentAgentController(options: {
+  config: Config;
+  env: Record<string, string>;
+  systemPrompt: string;
+  messages: SessionMessage[];
+  sessionKey: string;
+  tools: AgentTool[];
+}): Promise<AgentController> {
+  const key = llmApiKey(options.config, options.env);
+  if (!key) throw new Error(`缺少 ${options.config.llm.apiKeyEnv}，请配置发言调度 Agent 的 LLM 密钥`);
+  const models = makeModels(options.config);
+  const model = options.config.llm.provider === "custom"
+    ? customModel(options.config)
+    : models.getModel(options.config.llm.provider, options.config.llm.model);
+  if (!model) throw new Error(`pi-ai 中找不到模型 ${options.config.llm.provider}/${options.config.llm.model}`);
+  const mcp: McpRuntime = { tools: [], close: async () => undefined };
+  const agent = new Agent({
+    initialState: {
+      systemPrompt: options.systemPrompt,
+      model,
+      thinkingLevel: options.config.llm.thinkingLevel,
+      tools: options.tools,
+      messages: options.messages as unknown as AgentMessage[],
+    },
+    streamFn: models.streamSimple.bind(models),
+    getApiKey: async () => key,
+    toolExecution: "sequential",
+    sessionId: options.sessionKey,
+  });
+  return {
+    agent,
+    mcp,
+    prompt: async (text) => { await agent.prompt(text); },
+    abort: () => agent.abort(),
+    isRunning: () => agent.state.isStreaming,
+    waitForIdle: () => agent.waitForIdle(),
+    reset: () => agent.reset(),
+    setSystemPrompt: (prompt) => { agent.state.systemPrompt = prompt; },
+    messages: () => agent.state.messages as AgentMessage[],
+    close: () => mcp.close(),
+  };
+}

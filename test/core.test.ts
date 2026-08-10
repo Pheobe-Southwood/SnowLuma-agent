@@ -73,6 +73,7 @@ describe("initWorkspace and loadConfig", () => {
     expect(config.skills.enabled).toEqual(["demo"]);
     expect(config.blockedToolNames).toEqual(["bash"]);
     expect(config.groupDefaults.mode).toBe("at");
+    expect(config.speechDispatcher.enabled).toBe(false);
   });
 
   it("rejects invalid tools.json JSON with a clear error", async () => {
