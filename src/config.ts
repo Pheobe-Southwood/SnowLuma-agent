@@ -103,6 +103,7 @@ export function defaultConfig(dir: string): Config {
     },
     commandPrefix: "/",
     queue: { maxLength: 10, notifyFirstOnly: false },
+    speechDispatcher: { enabled: false },
     skills: tools.skills,
     mcp: tools.mcp,
     blockedToolNames: tools.blockedToolNames,
@@ -249,6 +250,7 @@ function mainConfigDefaults(dir: string): Record<string, unknown> {
     reply: full.reply,
     commandPrefix: full.commandPrefix,
     queue: full.queue,
+    speechDispatcher: full.speechDispatcher,
   };
 }
 
@@ -267,6 +269,7 @@ export function validateConfig(config: Config): string[] {
   if (!Number.isFinite(config.session.inactivityTtlHours) || config.session.inactivityTtlHours <= 0) errors.push("session.inactivityTtlHours 必须为正数");
   if (!Number.isInteger(config.session.maxMessages) || config.session.maxMessages < 2) errors.push("session.maxMessages 必须至少为 2");
   if (!Number.isInteger(config.queue.maxLength) || config.queue.maxLength < 1) errors.push("queue.maxLength 必须为正整数");
+  if (!isObject(config.speechDispatcher) || typeof config.speechDispatcher.enabled !== "boolean") errors.push("speechDispatcher.enabled 必须是布尔值");
   if (config.media.containerFallback.enabled && !config.media.containerFallback.volumeName && !config.media.containerFallback.hostDir) errors.push("启用 media.containerFallback 时必须配置 volumeName 或 hostDir");
   const mode = config.groupDefaults.mode ?? config.group?.mode;
   if (mode && mode !== "at" && mode !== "all") errors.push("groupDefaults.mode 必须是 at 或 all");

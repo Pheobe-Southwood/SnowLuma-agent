@@ -65,9 +65,32 @@ export interface Config {
   };
   commandPrefix: string;
   queue: { maxLength: number; notifyFirstOnly: boolean };
+  speechDispatcher: { enabled: boolean };
   skills: { dir: string; enabled: string[] };
   mcp: { servers: McpServerConfig[] };
   blockedToolNames: string[];
+}
+
+export type SpeechDispatcherReset =
+  | { mode: "afterDispatches"; count: number }
+  | { mode: "afterMessages"; count: number }
+  | { mode: "interval"; intervalMinutes: number };
+
+export interface SpeechDispatcherConfig {
+  llm: Partial<Config["llm"]>;
+  session: { maxMessages: number };
+  reset: SpeechDispatcherReset;
+  templates: {
+    inputMessage: string;
+    inputSuffix: string;
+    dispatchMessage: string;
+    dispatchSuffix: string;
+  };
+  log: { maxBytes: number; backupCount: number };
+}
+
+export interface SpeechDispatcherToolsConfig {
+  enabled: string[];
 }
 
 export interface GroupConfig {

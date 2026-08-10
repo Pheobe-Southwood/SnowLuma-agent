@@ -14,3 +14,4 @@ export * from "./media.js";
 export * from "./reply.js";
 export * from "./sessions.js";
 export * from "./status.js";
+export * from "./speech_dispatcher.js";

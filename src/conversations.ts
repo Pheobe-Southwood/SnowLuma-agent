@@ -34,6 +34,7 @@ function conversationConfigDefaults(config: Config, target: SessionTarget): Reco
     llm: { ...config.llm },
     session: { ...config.session },
     reply: { mode: config.reply.mode },
+    speechDispatcher: { ...config.speechDispatcher },
   };
   if (target.kind === "group") {
     const policy = groupPolicy(config);

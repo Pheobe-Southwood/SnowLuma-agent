@@ -9,6 +9,7 @@
 - 支持 `/new` 开启新会话、`/stop` 中止当前回答、`/help` 查看指令、`/status` 查看会话状态。
 - Agent 长时间无用户可见回复（thinking / 调工具）时，默认每 30 秒向 QQ 发送可配置的「工作中」心跳与累计 token。
 - 会话按用户或群组持久化，并支持超时清理和忙碌消息队列。
+- 可选的“发言调度 Agent”会结合角色人设与聊天氛围决定何时把一批消息交给角色 Agent，避免逐条机械回复。
 - 每个会话（群号 / QQ 号）有独立的文件夹，存放会话、系统提示词、`config.json` 和 `.env`；可以为不同会话配置不同模型、MCP 工具和 Skills。
 - 自动下载图片、文件和语音，并将本地路径作为上下文提供给 LLM。
 - 支持 pi 的多种模型提供商：Anthropic、OpenAI、OpenRouter、DeepSeek 和自定义 OpenAI 兼容接口。
@@ -212,6 +213,29 @@ SnowLuma 容器应使用 Docker 的 `restart: unless-stopped`。Agent 可以使�
 
 如果消息以 @ 机器人开头，发送给 LLM 的文本会移除这个开头的 @ 和其后的空白；其他用户的 @ 和消息中间的 @ 会保留。系统命令不会添加发送者标识，因此 `@机器人 /new` 可以直接重置当前群聊会话。
 
+## 发言调度 Agent
+
+在全局或具体会话的 `config.json` 中显式开启：
+
+```json
+"speechDispatcher": {
+  "enabled": true
+}
+```
+
+启用后，私聊以及 `mode: "all"`、`session: "shared"` 的群聊普通消息会先交给发言调度 Agent。它可以等待更多消息，只在合适时通过内置的“触发角色回复”工具把自上次派发后的整段聊天记录交给角色 Agent。群聊 @ 消息始终直达角色 Agent 且不进入调度记录；`at` 和 `per-user` 群聊模式不启用调度。
+
+调度目录在首次需要时惰性生成：
+
+```text
+~/.snowluma-agent/speech-dispatcher/             # 全局静态模板
+conversations/<QQ号或群号>/speech-dispatcher/   # 会话配置、Pi 会话和 transcript.md
+```
+
+可分别编辑其中的 `prompt.md`、`config.json` 和 `tools.json`。调度侧配置支持独立 LLM 覆盖、输入/派发模板、按派发次数/消息数/固定时间重置，以及日志轮转；未配置的 LLM 字段回退到角色 Agent。调度文本只写入 `session.json` 和 `transcript.md`，不会发送到 QQ。
+
+`/new` 同时重置角色与调度会话并清空未派发消息；`/stop` 只停止角色 Agent。固定时间只负责重置调度记忆，不会在无人发新消息时主动唤醒模型。完整字段见 [`docs/config.md`](docs/config.md)。
+
 ## 会话目录与每会话配置
 
 每个会话（私聊按 QQ 号、群聊按群号）在 `~/.snowluma-agent/conversations/` 下有一个独立文件夹，首次收到该会话的消息时自动生成：
@@ -227,12 +251,14 @@ SnowLuma 容器应使用 Docker 的 `restart: unless-stopped`。Agent 可以使�
 ├── prompts/
 │   └── SYSTEM_DEFAULT.md
 ├── skills/              # 全局 Skills 库
+├── speech-dispatcher/   # 启用后惰性生成的全局调度模板
 └── conversations/
     ├── 10001/           # 私聊：QQ 号
     │   ├── config.json  # 该会话的配置（自动从全局生成，可编辑）
     │   ├── tools.json   # 该会话的 tools（新建时复制全局 tools.json）
     │   ├── .env         # 该会话的密钥（自动从全局生成，可编辑）
     │   ├── prompt.md    # 该会话的系统提示词
+    │   ├── speech-dispatcher/ # 可选的发言调度配置、会话和日志
     │   └── session_*.json
     └── 123456/          # 群聊：群号
         ├── config.json  # 含该群 group 策略
